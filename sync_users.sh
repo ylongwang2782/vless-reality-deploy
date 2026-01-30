@@ -200,8 +200,6 @@ rules:
     with open(f'/var/lib/xray/traffic/{name}.json', 'w') as f:
         json.dump(user_info, f, indent=2)
 
-    with open(f'/root/user_links/{name}_vless.txt', 'w') as f:
-        f.write(vless_link)
     with open(f'/root/user_links/{name}_sub.txt', 'w') as f:
         f.write(f"http://{ip}:{sub_port}/{sub_token}")
 
@@ -256,7 +254,6 @@ print("=" * 60)
 print("USER_LINKS_START")
 for r in results:
     print(f"USER:{r['name']}")
-    print(f"VLESS:{r['vless']}")
     print(f"SUB:{r['sub_url']}")
     print("---")
 print("USER_LINKS_END")
@@ -355,16 +352,11 @@ log_info "用户同步完成！"
 log_info "=========================================="
 echo ""
 
-for vless_file in "$SCRIPT_DIR/user_links/"*_vless.txt; do
-    if [ -f "$vless_file" ]; then
-        username=$(basename "$vless_file" _vless.txt)
-        sub_file="$SCRIPT_DIR/user_links/${username}_sub.txt"
-
+for sub_file in "$SCRIPT_DIR/user_links/"*_sub.txt; do
+    if [ -f "$sub_file" ]; then
+        username=$(basename "$sub_file" _sub.txt)
         echo "用户: $username"
-        echo "VLESS: $(cat "$vless_file")"
-        if [ -f "$sub_file" ]; then
-            echo "订阅:  $(cat "$sub_file")"
-        fi
+        echo "订阅: $(cat "$sub_file")"
         echo ""
     fi
 done

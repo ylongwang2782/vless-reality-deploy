@@ -188,74 +188,18 @@ nginx -t && systemctl reload nginx
 systemctl enable nginx
 
 # ==========================================
-# 7. Output Subscription Link + QR + Clash YAML
+# 7. Deployment Complete
 # ==========================================
 IP=$(curl -s ifconfig.me)
-
-# URL encode the node name
-NODE_NAME_ENCODED=$(echo -n "$NODE_NAME" | sed 's/ /%20/g')
-
-LINK="vless://$UUID@$IP:443?security=reality&encryption=none&pbk=$PUB&headerType=none&fp=chrome&type=tcp&flow=xtls-rprx-vision&sni=www.apple.com&sid=$SID#$NODE_NAME_ENCODED"
-
-SUB_URL="http://$IP:$SUB_PORT/$SUB_TOKEN"
-
-cat > /root/clash_vless.yaml <<EOF
-# Clash Meta (mihomo) Configuration for VLESS + Reality
-
-proxies:
-  - name: "$NODE_NAME"
-    type: vless
-    server: $IP
-    port: 443
-    uuid: $UUID
-    network: tcp
-    tls: true
-    udp: true
-    flow: xtls-rprx-vision
-    servername: www.apple.com
-    reality-opts:
-      public-key: $PUB
-      short-id: $SID
-    client-fingerprint: chrome
-
-proxy-groups:
-  - name: "Proxy"
-    type: select
-    proxies:
-      - $NODE_NAME
-      - DIRECT
-
-rules:
-  - GEOIP,CN,DIRECT
-  - MATCH,Proxy
-EOF
-
-cp /root/clash_vless.yaml "$SUB_DIR/clash.yaml"
-
-echo "$LINK" > /root/vless_link.txt
-echo "$SUB_URL" > /root/clash_sub_url.txt
 
 echo ""
 echo "================================================================"
 echo "   VLESS + Reality Deployment Successful!"
 echo "================================================================"
 echo ""
-echo "VLESS Link:"
-echo "$LINK"
-echo ""
-echo "Clash Subscription URL:"
-echo "$SUB_URL"
+echo "Server IP: $IP"
+echo "Public Key: $PUB"
+echo "Short ID: $SID"
+echo "Sub Token: $SUB_TOKEN"
 echo ""
 echo "================================================================"
-echo "Output files:"
-echo "  - VLESS Link:      /root/vless_link.txt"
-echo "  - Clash YAML:      /root/clash_vless.yaml"
-echo "  - Subscription:    /root/clash_sub_url.txt"
-echo "  - QR Code:         /root/vless_qr.png"
-echo "================================================================"
-
-if ! command -v qrencode &> /dev/null; then
-    apt-get update && apt-get install -y qrencode
-fi
-qrencode -o /root/vless_qr.png "$LINK"
-qrencode -t ASCII "$LINK"

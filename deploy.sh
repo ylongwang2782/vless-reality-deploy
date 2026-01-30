@@ -91,29 +91,10 @@ expect /tmp/deploy_vps.exp
 log_info "VPS 部署完成"
 
 # ==========================================
-# Step 2: 下载生成的文件
-# ==========================================
-log_info "Step 2: 下载生成的文件..."
-
-for file in vless_link.txt clash_vless.yaml clash_sub_url.txt vless_qr.png; do
-    expect << EOF
-set timeout 30
-spawn scp -o StrictHostKeyChecking=no $VPS_USER@$VPS_IP:/root/$file $SCRIPT_DIR/
-expect {
-    "password:" { send "$VPS_PASSWORD\r" }
-    timeout { exit 1 }
-}
-expect eof
-EOF
-done
-
-log_info "文件下载完成"
-
-# ==========================================
-# Step 3: 配置 Cloudflare（可选）
+# Step 2: 配置 Cloudflare（可选）
 # ==========================================
 if [ -n "$CF_API_TOKEN" ] && [ -n "$CF_DOMAIN" ] && [ -n "$CF_SUBDOMAIN" ]; then
-    log_info "Step 3: 配置 Cloudflare DNS..."
+    log_info "Step 2: 配置 Cloudflare DNS..."
 
     # 获取 Zone ID
     ZONE_RESPONSE=$(curl -s -X GET "https://api.cloudflare.com/client/v4/zones?name=$CF_DOMAIN" \
@@ -155,9 +136,9 @@ if [ -n "$CF_API_TOKEN" ] && [ -n "$CF_DOMAIN" ] && [ -n "$CF_SUBDOMAIN" ]; then
     log_info "DNS 配置完成: $CF_SUBDOMAIN.$CF_DOMAIN -> $VPS_IP"
 
     # ==========================================
-    # Step 4: 配置 SSL 并启用 Cloudflare 代理
+    # Step 3: 配置 SSL 并启用 Cloudflare 代理
     # ==========================================
-    log_info "Step 4: 配置 SSL..."
+    log_info "Step 3: 配置 SSL..."
 
     # 生成 SSL 配置脚本
     cat > /tmp/setup_ssl.sh << 'SSLEOF'
@@ -250,34 +231,19 @@ else
 fi
 
 # ==========================================
-# Step 5: 同步用户配置（如果存在 users.yaml）
+# Step 4: 同步用户配置（如果存在 users.yaml）
 # ==========================================
 USERS_FILE="$SCRIPT_DIR/users.yaml"
 
 if [ -f "$USERS_FILE" ]; then
-    log_info "Step 5: 同步用户配置..."
+    log_info "Step 4: 同步用户配置..."
     "$SCRIPT_DIR/sync_users.sh"
 else
     log_warn "未找到 users.yaml，跳过多用户配置"
     log_info "如需添加用户，请复制 users.yaml.example 为 users.yaml 并编辑"
-
-    # 输出默认用户信息
     echo ""
     log_info "=========================================="
-    log_info "部署完成！"
-    log_info "=========================================="
-    echo ""
-    echo "VLESS 链接:"
-    cat "$SCRIPT_DIR/vless_link.txt"
-    echo ""
-    echo "Clash 订阅链接:"
-    cat "$SCRIPT_DIR/clash_sub_url.txt"
-    echo ""
-    log_info "=========================================="
-    log_info "本地文件:"
-    log_info "  - vless_link.txt"
-    log_info "  - clash_vless.yaml"
-    log_info "  - clash_sub_url.txt"
-    log_info "  - vless_qr.png"
+    log_info "VPS 部署完成！"
+    log_info "请配置 users.yaml 后运行 sync_users.sh 添加用户"
     log_info "=========================================="
 fi
