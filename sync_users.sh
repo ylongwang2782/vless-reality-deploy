@@ -77,9 +77,13 @@ KEYS=$(python3 << 'PY'
 import json
 with open('/usr/local/etc/xray/config.json') as f:
     c = json.load(f)
-rs = c['inbounds'][0]['streamSettings']['realitySettings']
-print(rs['privateKey'])
-print(rs['shortIds'][0])
+# 找到 VLESS inbound（带有 streamSettings 的）
+for inb in c['inbounds']:
+    if 'streamSettings' in inb:
+        rs = inb['streamSettings']['realitySettings']
+        print(rs['privateKey'])
+        print(rs['shortIds'][0])
+        break
 PY
 )
 
