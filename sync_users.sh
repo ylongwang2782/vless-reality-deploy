@@ -44,11 +44,11 @@ log_info "=========================================="
 log_info "同步用户配置到 VPS"
 log_info "=========================================="
 
-# 生成远程执行脚本
+# 生成远程执行脚本（从文件读取 YAML）
 cat > /tmp/sync_users_remote.sh << 'REMOTE_SCRIPT'
 #!/bin/bash
 
-USERS_YAML="$1"
+USERS_YAML_FILE="$1"
 SUB_PORT="$2"
 NODE_PREFIX="$3"
 
@@ -60,11 +60,14 @@ OUTPUT_DIR="/root/user_links"
 
 mkdir -p "$TRAFFIC_DIR" "$SUB_DIR" "$OUTPUT_DIR"
 
-# 检查 Python3
+# 检查 Python3 和 PyYAML
 if ! command -v python3 &> /dev/null; then
     echo "[ERROR] Python3 not found"
     exit 1
 fi
+
+# 安装 PyYAML 如果不存在
+python3 -c "import yaml" 2>/dev/null || pip3 install pyyaml -q
 
 # 获取服务器信息
 IP=$(curl -s ifconfig.me)
@@ -95,15 +98,16 @@ import json
 import subprocess
 import os
 
-users_yaml = '''$USERS_YAML'''
+# 从文件读取 YAML
+with open('$USERS_YAML_FILE', 'r') as f:
+    users_config = yaml.safe_load(f)
+
 sub_port = "$SUB_PORT"
 node_prefix = "$NODE_PREFIX"
 ip = "$IP"
 pub = "$PUB"
 sid = "$SID"
 
-# 解析用户配置
-users_config = yaml.safe_load(users_yaml)
 users = users_config.get('users', [])
 
 if not users:
@@ -129,18 +133,15 @@ for user in users:
 
     # 检查用户是否已存在
     if email in existing_emails:
-        # 从现有配置获取 UUID
         for client in xray_config['inbounds'][0]['settings']['clients']:
             if client['email'] == email:
                 uuid = client['id']
                 break
         print(f"[INFO] User {name} already exists, UUID: {uuid}")
     else:
-        # 生成新 UUID
         result = subprocess.run(['/usr/local/bin/xray', 'uuid'], capture_output=True, text=True)
         uuid = result.stdout.strip()
         print(f"[INFO] Creating user {name}, UUID: {uuid}")
-
         new_clients.append({
             "id": uuid,
             "flow": "xtls-rprx-vision",
@@ -151,13 +152,10 @@ for user in users:
     import hashlib
     sub_token = f"{name}_{hashlib.md5(uuid.encode()).hexdigest()[:16]}"
 
-    # 节点名称
     node_name = f"{node_prefix}_{name}" if node_prefix else f"Reality_{name}"
 
-    # 生成 VLESS 链接
     vless_link = f"vless://{uuid}@{ip}:443?security=reality&encryption=none&pbk={pub}&headerType=none&fp=chrome&type=tcp&flow=xtls-rprx-vision&sni=www.apple.com&sid={sid}#{node_name}"
 
-    # 生成 Clash YAML
     clash_yaml = f'''# Clash Meta Configuration for {name}
 
 proxies:
@@ -188,11 +186,9 @@ rules:
   - MATCH,Proxy
 '''
 
-    # 保存订阅文件
     with open(f'/var/www/sub/{name}.yaml', 'w') as f:
         f.write(clash_yaml)
 
-    # 保存用户信息
     user_info = {
         "username": name,
         "uuid": uuid,
@@ -204,7 +200,6 @@ rules:
     with open(f'/var/lib/xray/traffic/{name}.json', 'w') as f:
         json.dump(user_info, f, indent=2)
 
-    # 保存链接文件
     with open(f'/root/user_links/{name}_vless.txt', 'w') as f:
         f.write(vless_link)
     with open(f'/root/user_links/{name}_sub.txt', 'w') as f:
@@ -214,16 +209,14 @@ rules:
         "name": name,
         "vless": vless_link,
         "sub_url": f"http://{ip}:{sub_port}/{sub_token}",
-        "sub_token": sub_token,
-        "traffic_limit_gb": traffic_limit
+        "sub_token": sub_token
     })
 
-# 添加新用户到配置
 if new_clients:
     xray_config['inbounds'][0]['settings']['clients'].extend(new_clients)
     with open('/usr/local/etc/xray/config.json', 'w') as f:
         json.dump(xray_config, f, indent=4)
-    print(f"[INFO] Added {len(new_clients)} new user(s) to Xray config")
+    print(f"[INFO] Added {len(new_clients)} new user(s)")
 
 # 更新 nginx 配置
 nginx_locations = ""
@@ -232,44 +225,32 @@ for r in results:
     location /{r['sub_token']} {{
         alias /var/www/sub/{r['name']}.yaml;
         default_type 'text/yaml; charset=utf-8';
-        add_header Content-Disposition 'attachment; filename="{r['name']}.yaml"';
     }}
 '''
 
-# 读取现有 nginx 配置的 server 块开头
-nginx_conf = f'''server {{
+if os.path.exists('/etc/nginx/ssl/origin.crt'):
+    nginx_conf = f'''server {{
     listen {sub_port} ssl;
     server_name _;
-
     ssl_certificate /etc/nginx/ssl/origin.crt;
     ssl_certificate_key /etc/nginx/ssl/origin.key;
     ssl_protocols TLSv1.2 TLSv1.3;
 {nginx_locations}
-    location / {{
-        return 404;
-    }}
+    location / {{ return 404; }}
 }}
 '''
-
-# 检查是否有 SSL 证书，如果没有则使用非 SSL
-import os
-if not os.path.exists('/etc/nginx/ssl/origin.crt'):
+else:
     nginx_conf = f'''server {{
     listen {sub_port};
     server_name _;
 {nginx_locations}
-    location / {{
-        return 404;
-    }}
+    location / {{ return 404; }}
 }}
 '''
 
 with open('/etc/nginx/sites-available/clash-sub', 'w') as f:
     f.write(nginx_conf)
 
-print("[INFO] Updated nginx configuration")
-
-# 输出结果
 print("")
 print("=" * 60)
 print("USER_LINKS_START")
@@ -277,7 +258,6 @@ for r in results:
     print(f"USER:{r['name']}")
     print(f"VLESS:{r['vless']}")
     print(f"SUB:{r['sub_url']}")
-    print(f"LIMIT:{r['traffic_limit_gb']}GB")
     print("---")
 print("USER_LINKS_END")
 print("=" * 60)
@@ -286,38 +266,33 @@ PYTHON_SCRIPT
 # 验证并重启服务
 echo "[INFO] Validating Xray config..."
 if $XRAY_BIN run -test -config $CONFIG_FILE > /dev/null 2>&1; then
-    echo "[INFO] Config valid, restarting Xray..."
+    echo "[INFO] Restarting Xray..."
     systemctl restart xray
     sleep 2
     if [ "$(systemctl is-active xray)" = "active" ]; then
-        echo "[INFO] Xray restarted successfully"
+        echo "[INFO] Xray OK"
     else
-        echo "[ERROR] Xray failed to start"
+        echo "[ERROR] Xray failed"
         exit 1
     fi
 else
-    echo "[ERROR] Invalid Xray config"
+    echo "[ERROR] Invalid config"
     exit 1
 fi
 
-# 重载 nginx
 nginx -t && systemctl reload nginx
-echo "[INFO] Nginx reloaded"
-
-echo "[INFO] User sync completed"
+echo "[INFO] Sync completed"
 REMOTE_SCRIPT
 
-# 读取 users.yaml 内容
-USERS_YAML=$(cat "$USERS_FILE")
-
-# 上传并执行远程脚本
 log_info "上传配置到 VPS..."
 
-expect << EOF
+# 创建 expect 脚本
+cat > /tmp/sync_expect.exp << EXPEOF
+#!/usr/bin/expect
 set timeout 300
 
-# 上传脚本
-spawn scp -o StrictHostKeyChecking=no /tmp/sync_users_remote.sh $VPS_USER@$VPS_IP:/root/
+# 上传脚本和配置
+spawn scp -o StrictHostKeyChecking=no /tmp/sync_users_remote.sh $USERS_FILE $VPS_USER@$VPS_IP:/tmp/
 expect {
     "password:" { send "$VPS_PASSWORD\r" }
     timeout { puts "SCP timed out"; exit 1 }
@@ -331,22 +306,20 @@ expect {
     timeout { puts "SSH timed out"; exit 1 }
 }
 expect "#"
-send "chmod +x /root/sync_users_remote.sh\r"
-expect "#"
-send "cat > /tmp/users.yaml << 'YAMLEOF'\n${USERS_YAML}\nYAMLEOF\r"
-expect "#"
-send "/root/sync_users_remote.sh \"\$(cat /tmp/users.yaml)\" \"$SUB_PORT\" \"$NODE_NAME\"\r"
+send "chmod +x /tmp/sync_users_remote.sh && /tmp/sync_users_remote.sh /tmp/users.yaml '$SUB_PORT' '$NODE_NAME'\r"
 expect {
     "USER_LINKS_END" { }
     "ERROR" { puts "Sync failed"; exit 1 }
     timeout { puts "Timeout"; exit 1 }
 }
 expect "#"
-send "rm /root/sync_users_remote.sh /tmp/users.yaml\r"
+send "rm -f /tmp/sync_users_remote.sh /tmp/users.yaml\r"
 expect "#"
 send "exit\r"
 expect eof
-EOF
+EXPEOF
+
+expect /tmp/sync_expect.exp
 
 log_info "下载用户链接..."
 
