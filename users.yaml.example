@@ -1,0 +1,19 @@
+# ==========================================
+# 用户配置文件
+# 复制此文件为 users.yaml 并编辑
+# ==========================================
+
+users:
+  # 主用户（你自己）
+  - name: owner
+    traffic_limit_gb: 0      # 0 表示无限制
+    reset_day: 1             # 每月重置日期（1-28）
+
+  # 示例：添加朋友
+  # - name: friend1
+  #   traffic_limit_gb: 200
+  #   reset_day: 27
+
+  # - name: friend2
+  #   traffic_limit_gb: 100
+  #   reset_day: 1

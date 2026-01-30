@@ -250,23 +250,34 @@ else
 fi
 
 # ==========================================
-# 完成
+# Step 5: 同步用户配置（如果存在 users.yaml）
 # ==========================================
-echo ""
-log_info "=========================================="
-log_info "部署完成！"
-log_info "=========================================="
-echo ""
-echo "VLESS 链接:"
-cat "$SCRIPT_DIR/vless_link.txt"
-echo ""
-echo "Clash 订阅链接:"
-cat "$SCRIPT_DIR/clash_sub_url.txt"
-echo ""
-log_info "=========================================="
-log_info "本地文件:"
-log_info "  - vless_link.txt"
-log_info "  - clash_vless.yaml"
-log_info "  - clash_sub_url.txt"
-log_info "  - vless_qr.png"
-log_info "=========================================="
+USERS_FILE="$SCRIPT_DIR/users.yaml"
+
+if [ -f "$USERS_FILE" ]; then
+    log_info "Step 5: 同步用户配置..."
+    "$SCRIPT_DIR/sync_users.sh"
+else
+    log_warn "未找到 users.yaml，跳过多用户配置"
+    log_info "如需添加用户，请复制 users.yaml.example 为 users.yaml 并编辑"
+
+    # 输出默认用户信息
+    echo ""
+    log_info "=========================================="
+    log_info "部署完成！"
+    log_info "=========================================="
+    echo ""
+    echo "VLESS 链接:"
+    cat "$SCRIPT_DIR/vless_link.txt"
+    echo ""
+    echo "Clash 订阅链接:"
+    cat "$SCRIPT_DIR/clash_sub_url.txt"
+    echo ""
+    log_info "=========================================="
+    log_info "本地文件:"
+    log_info "  - vless_link.txt"
+    log_info "  - clash_vless.yaml"
+    log_info "  - clash_sub_url.txt"
+    log_info "  - vless_qr.png"
+    log_info "=========================================="
+fi

@@ -1,7 +1,11 @@
 # 敏感配置文件（包含密码和 API Token）
 config.env
 
+# 用户配置文件（包含用户列表）
+users.yaml
+
 # 生成的用户链接和订阅文件
+user_links/
 *_link.txt
 *_url.txt
 *_sub_url.txt
