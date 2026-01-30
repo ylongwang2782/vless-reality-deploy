@@ -216,7 +216,7 @@ for user in users:
     # 使用用户名作为订阅路径（简洁）
     sub_token = name
 
-    node_name = f"{node_prefix}_{name}" if node_prefix else f"Reality_{name}"
+    node_name = node_prefix if node_prefix else "Reality"
 
     vless_link = f"vless://{uuid}@{ip}:443?security=reality&encryption=none&pbk={pub}&headerType=none&fp=chrome&type=tcp&flow=xtls-rprx-vision&sni=www.apple.com&sid={sid}#{node_name}"
 
