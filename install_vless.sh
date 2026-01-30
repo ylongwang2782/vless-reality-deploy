@@ -69,8 +69,37 @@ cat > /usr/local/etc/xray/config.json <<EOF
     "log": {
         "loglevel": "warning"
     },
+    "stats": {},
+    "api": {
+        "tag": "api",
+        "services": ["StatsService"]
+    },
+    "policy": {
+        "levels": {
+            "0": {
+                "statsUserUplink": true,
+                "statsUserDownlink": true
+            }
+        },
+        "system": {
+            "statsInboundUplink": true,
+            "statsInboundDownlink": true,
+            "statsOutboundUplink": true,
+            "statsOutboundDownlink": true
+        }
+    },
     "inbounds": [
         {
+            "tag": "api",
+            "port": 10085,
+            "listen": "127.0.0.1",
+            "protocol": "dokodemo-door",
+            "settings": {
+                "address": "127.0.0.1"
+            }
+        },
+        {
+            "tag": "vless-in",
             "port": 443,
             "protocol": "vless",
             "settings": {
@@ -78,7 +107,7 @@ cat > /usr/local/etc/xray/config.json <<EOF
                     {
                         "id": "$UUID",
                         "flow": "xtls-rprx-vision",
-                        "email": "user@vps"
+                        "email": "owner@vps"
                     }
                 ],
                 "decryption": "none"
@@ -105,7 +134,16 @@ cat > /usr/local/etc/xray/config.json <<EOF
         {
             "protocol": "freedom"
         }
-    ]
+    ],
+    "routing": {
+        "rules": [
+            {
+                "inboundTag": ["api"],
+                "outboundTag": "api",
+                "type": "field"
+            }
+        ]
+    }
 }
 EOF
 

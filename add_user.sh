@@ -141,22 +141,36 @@ EOF
 # 生成订阅 token
 SUB_TOKEN="${USERNAME}_$(openssl rand -hex 8)"
 
-# 读取现有 nginx 配置并添加新路径
-NGINX_CONF="/etc/nginx/sites-available/clash-sub"
+# 更新订阅服务的路由配置
+ROUTES_FILE="$SUB_DIR/routes.json"
+python3 << PYROUTES
+import json
+import os
 
-# 检查是否已存在该用户的配置
-if ! grep -q "/${USERNAME}_" "$NGINX_CONF" 2>/dev/null; then
-    # 在最后一个 location 块之后、server 块结束之前添加
-    sed -i "/location \/ {/i\\
-    location /${SUB_TOKEN} {\\
-        alias ${SUB_DIR}/${USERNAME}.yaml;\\
-        default_type 'text/yaml; charset=utf-8';\\
-        add_header Content-Disposition 'attachment; filename=\"${USERNAME}.yaml\"';\\
-    }\\
-" "$NGINX_CONF"
+routes_file = '$ROUTES_FILE'
+routes = {}
+if os.path.exists(routes_file):
+    with open(routes_file, 'r') as f:
+        routes = json.load(f)
+
+routes['$SUB_TOKEN'] = {
+    'name': '$USERNAME',
+    'yaml_path': '$SUB_DIR/${USERNAME}.yaml',
+    'config_path': '$TRAFFIC_DIR/${USERNAME}.json'
+}
+
+with open(routes_file, 'w') as f:
+    json.dump(routes, f, indent=2)
+print("[INFO] Routes updated")
+PYROUTES
+
+# 如果订阅服务存在则重启
+if systemctl is-active sub-server >/dev/null 2>&1; then
+    systemctl restart sub-server
+    echo "[INFO] Subscription server restarted"
+else
+    echo "[WARN] Subscription server not running, run sync_users.sh to start it"
 fi
-
-nginx -t && systemctl reload nginx
 
 # 生成 VLESS 链接
 VLESS_LINK="vless://${NEW_UUID}@${IP}:443?security=reality&encryption=none&pbk=${PUB}&headerType=none&fp=chrome&type=tcp&flow=xtls-rprx-vision&sni=www.apple.com&sid=${SID}#Reality_${USERNAME}"

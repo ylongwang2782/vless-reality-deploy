@@ -118,8 +118,69 @@ if not users:
 with open('/usr/local/etc/xray/config.json', 'r') as f:
     xray_config = json.load(f)
 
-# 获取现有用户
-existing_emails = {c['email'] for c in xray_config['inbounds'][0]['settings']['clients']}
+# 确保 stats 配置存在
+if 'stats' not in xray_config:
+    xray_config['stats'] = {}
+
+if 'api' not in xray_config:
+    xray_config['api'] = {
+        "tag": "api",
+        "services": ["StatsService"]
+    }
+
+if 'policy' not in xray_config:
+    xray_config['policy'] = {
+        "levels": {
+            "0": {
+                "statsUserUplink": True,
+                "statsUserDownlink": True
+            }
+        },
+        "system": {
+            "statsInboundUplink": True,
+            "statsInboundDownlink": True,
+            "statsOutboundUplink": True,
+            "statsOutboundDownlink": True
+        }
+    }
+
+# 确保 API inbound 存在
+api_inbound_exists = False
+vless_inbound_idx = 0
+for i, inb in enumerate(xray_config['inbounds']):
+    if inb.get('tag') == 'api':
+        api_inbound_exists = True
+    if inb.get('protocol') == 'vless':
+        vless_inbound_idx = i
+        if 'tag' not in inb:
+            inb['tag'] = 'vless-in'
+
+if not api_inbound_exists:
+    xray_config['inbounds'].insert(0, {
+        "tag": "api",
+        "port": 10085,
+        "listen": "127.0.0.1",
+        "protocol": "dokodemo-door",
+        "settings": {
+            "address": "127.0.0.1"
+        }
+    })
+    vless_inbound_idx += 1
+
+# 确保路由规则存在
+if 'routing' not in xray_config:
+    xray_config['routing'] = {"rules": []}
+
+api_rule_exists = any(r.get('outboundTag') == 'api' for r in xray_config['routing'].get('rules', []))
+if not api_rule_exists:
+    xray_config['routing']['rules'].insert(0, {
+        "inboundTag": ["api"],
+        "outboundTag": "api",
+        "type": "field"
+    })
+
+# 获取现有用户 (使用正确的 inbound 索引)
+existing_emails = {c['email'] for c in xray_config['inbounds'][vless_inbound_idx]['settings']['clients']}
 
 # 处理每个用户
 results = []
@@ -133,7 +194,7 @@ for user in users:
 
     # 检查用户是否已存在
     if email in existing_emails:
-        for client in xray_config['inbounds'][0]['settings']['clients']:
+        for client in xray_config['inbounds'][vless_inbound_idx]['settings']['clients']:
             if client['email'] == email:
                 uuid = client['id']
                 break
@@ -211,43 +272,287 @@ rules:
     })
 
 if new_clients:
-    xray_config['inbounds'][0]['settings']['clients'].extend(new_clients)
+    xray_config['inbounds'][vless_inbound_idx]['settings']['clients'].extend(new_clients)
     with open('/usr/local/etc/xray/config.json', 'w') as f:
         json.dump(xray_config, f, indent=4)
     print(f"[INFO] Added {len(new_clients)} new user(s)")
 
-# 更新 nginx 配置
-nginx_locations = ""
+# 生成订阅服务的路由配置
+sub_routes = {}
 for r in results:
-    nginx_locations += f'''
-    location /{r['sub_token']} {{
-        alias /var/www/sub/{r['name']}.yaml;
-        default_type 'text/yaml; charset=utf-8';
-    }}
+    user_config_path = f"/var/lib/xray/traffic/{r['name']}.json"
+    sub_routes[r['sub_token']] = {
+        'name': r['name'],
+        'yaml_path': f"/var/www/sub/{r['name']}.yaml",
+        'config_path': user_config_path
+    }
+
+with open('/var/www/sub/routes.json', 'w') as f:
+    json.dump(sub_routes, f, indent=2)
+
+# 创建 Python 订阅服务
+sub_service = '''#!/usr/bin/env python3
+import http.server
+import ssl
+import json
+import os
+from datetime import datetime
+from urllib.parse import urlparse
+
+SUB_DIR = "/var/www/sub"
+ROUTES_FILE = os.path.join(SUB_DIR, "routes.json")
+
+class SubHandler(http.server.BaseHTTPRequestHandler):
+    def log_message(self, format, *args):
+        pass  # 静默日志
+
+    def do_HEAD(self):
+        self._handle_request(head_only=True)
+
+    def do_GET(self):
+        self._handle_request(head_only=False)
+
+    def _handle_request(self, head_only=False):
+        path = urlparse(self.path).path.strip('/')
+
+        # 加载路由配置
+        try:
+            with open(ROUTES_FILE, 'r') as f:
+                routes = json.load(f)
+        except:
+            self.send_error(500, "Internal Server Error")
+            return
+
+        if path not in routes:
+            self.send_error(404, "Not Found")
+            return
+
+        route = routes[path]
+        yaml_path = route['yaml_path']
+        config_path = route['config_path']
+
+        # 读取 YAML 文件
+        try:
+            with open(yaml_path, 'r') as f:
+                yaml_content = f.read()
+        except:
+            self.send_error(404, "Not Found")
+            return
+
+        # 读取用户配置获取流量限制
+        upload = 0
+        download = 0
+        total = 0
+        expire = 0
+
+        try:
+            with open(config_path, 'r') as f:
+                user_config = json.load(f)
+
+            traffic_limit_gb = user_config.get('traffic_limit_gb', 0)
+            if traffic_limit_gb > 0:
+                total = traffic_limit_gb * 1024 * 1024 * 1024  # 转换为字节
+
+            # 读取已使用流量（如果存在）
+            upload = user_config.get('upload_bytes', 0)
+            download = user_config.get('download_bytes', 0)
+
+            # 计算过期时间（下个重置日）
+            reset_day = user_config.get('reset_day', 1)
+            now = datetime.now()
+            year = now.year
+            month = now.month
+            if now.day >= reset_day:
+                month += 1
+                if month > 12:
+                    month = 1
+                    year += 1
+            try:
+                expire_date = datetime(year, month, reset_day)
+                expire = int(expire_date.timestamp())
+            except:
+                pass
+        except:
+            pass
+
+        # 发送响应
+        self.send_response(200)
+        self.send_header('Content-Type', 'text/yaml; charset=utf-8')
+
+        # 添加 subscription-userinfo 响应头（Shadowrocket 用这个显示流量信息）
+        if total > 0:
+            userinfo = f"upload={upload}; download={download}; total={total}"
+            if expire > 0:
+                userinfo += f"; expire={expire}"
+            self.send_header('subscription-userinfo', userinfo)
+
+        self.end_headers()
+        if not head_only:
+            self.wfile.write(yaml_content.encode('utf-8'))
+
+def run_server(port, use_ssl=False):
+    server = http.server.HTTPServer(('0.0.0.0', port), SubHandler)
+    if use_ssl and os.path.exists('/etc/nginx/ssl/origin.crt'):
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context.load_cert_chain('/etc/nginx/ssl/origin.crt', '/etc/nginx/ssl/origin.key')
+        server.socket = context.wrap_socket(server.socket, server_side=True)
+    print(f"Subscription server running on port {port} (SSL: {use_ssl})")
+    server.serve_forever()
+
+if __name__ == '__main__':
+    import sys
+    port = int(sys.argv[1]) if len(sys.argv) > 1 else 8443
+    use_ssl = os.path.exists('/etc/nginx/ssl/origin.crt')
+    run_server(port, use_ssl)
 '''
 
-if os.path.exists('/etc/nginx/ssl/origin.crt'):
-    nginx_conf = f'''server {{
-    listen {sub_port} ssl;
-    server_name _;
-    ssl_certificate /etc/nginx/ssl/origin.crt;
-    ssl_certificate_key /etc/nginx/ssl/origin.key;
-    ssl_protocols TLSv1.2 TLSv1.3;
-{nginx_locations}
-    location / {{ return 404; }}
-}}
-'''
-else:
-    nginx_conf = f'''server {{
-    listen {sub_port};
-    server_name _;
-{nginx_locations}
-    location / {{ return 404; }}
-}}
+with open('/var/www/sub/sub_server.py', 'w') as f:
+    f.write(sub_service)
+os.chmod('/var/www/sub/sub_server.py', 0o755)
+
+# 创建 systemd 服务
+systemd_service = f'''[Unit]
+Description=Subscription Server
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /var/www/sub/sub_server.py {sub_port}
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
 '''
 
-with open('/etc/nginx/sites-available/clash-sub', 'w') as f:
-    f.write(nginx_conf)
+with open('/etc/systemd/system/sub-server.service', 'w') as f:
+    f.write(systemd_service)
+
+# 创建流量采集脚本
+traffic_collector = '''#!/usr/bin/env python3
+"""
+流量采集脚本 - 从 Xray API 获取用户流量并更新配置文件
+"""
+import json
+import socket
+import os
+from datetime import datetime
+
+XRAY_API_HOST = "127.0.0.1"
+XRAY_API_PORT = 10085
+TRAFFIC_DIR = "/var/lib/xray/traffic"
+
+def query_stats(pattern, reset=False):
+    """通过 Xray API 查询流量统计"""
+    try:
+        import subprocess
+        cmd = ["/usr/local/bin/xray", "api", "stats", "-s", f"{XRAY_API_HOST}:{XRAY_API_PORT}"]
+        if pattern:
+            cmd.extend(["-pattern", pattern])
+        if reset:
+            cmd.append("-reset")
+
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        if result.returncode != 0:
+            return {}
+
+        # 解析输出
+        stats = {}
+        current_name = None
+        for line in result.stdout.strip().splitlines():
+            line = line.strip()
+            if line.startswith("stat:"):
+                continue
+            if line.startswith("name:"):
+                current_name = line.split(":", 1)[1].strip().strip('"')
+            elif line.startswith("value:") and current_name:
+                value = int(line.split(":", 1)[1].strip())
+                stats[current_name] = value
+                current_name = None
+        return stats
+    except Exception as e:
+        print(f"[ERROR] Query stats failed: {e}")
+        return {}
+
+def update_user_traffic():
+    """更新用户流量数据"""
+    if not os.path.exists(TRAFFIC_DIR):
+        return
+
+    # 获取所有用户流量统计
+    stats = query_stats("user>>>")
+
+    for filename in os.listdir(TRAFFIC_DIR):
+        if not filename.endswith('.json'):
+            continue
+
+        filepath = os.path.join(TRAFFIC_DIR, filename)
+        try:
+            with open(filepath, 'r') as f:
+                user_config = json.load(f)
+
+            email = user_config.get('email', '')
+            if not email:
+                continue
+
+            # 查找对应的流量数据
+            uplink_key = f"user>>>{email}>>>traffic>>>uplink"
+            downlink_key = f"user>>>{email}>>>traffic>>>downlink"
+
+            upload = stats.get(uplink_key, 0)
+            download = stats.get(downlink_key, 0)
+
+            # 累加流量（Xray stats 是累计值）
+            # 检查是否需要重置（每月重置日）
+            reset_day = user_config.get('reset_day', 1)
+            last_reset = user_config.get('last_reset_date', '')
+            today = datetime.now().strftime('%Y-%m-%d')
+            current_day = datetime.now().day
+            current_month = datetime.now().strftime('%Y-%m')
+            last_reset_month = last_reset[:7] if last_reset else ''
+
+            # 如果是新的月份且已过重置日，重置流量
+            if current_month != last_reset_month and current_day >= reset_day:
+                user_config['upload_bytes'] = upload
+                user_config['download_bytes'] = download
+                user_config['last_reset_date'] = today
+                print(f"[INFO] Reset traffic for {email}")
+            else:
+                # 更新流量数据
+                user_config['upload_bytes'] = upload
+                user_config['download_bytes'] = download
+
+            user_config['last_update'] = datetime.now().isoformat()
+
+            with open(filepath, 'w') as f:
+                json.dump(user_config, f, indent=2)
+
+            total_gb = (upload + download) / (1024**3)
+            print(f"[INFO] {email}: upload={upload}, download={download}, total={total_gb:.2f}GB")
+
+        except Exception as e:
+            print(f"[ERROR] Failed to update {filename}: {e}")
+
+if __name__ == '__main__':
+    print(f"[INFO] Traffic collector started at {datetime.now()}")
+    update_user_traffic()
+    print("[INFO] Done")
+'''
+
+with open('/var/lib/xray/traffic_collector.py', 'w') as f:
+    f.write(traffic_collector)
+os.chmod('/var/lib/xray/traffic_collector.py', 0o755)
+
+# 添加 cron 任务（每5分钟执行一次）
+import subprocess
+cron_job = "*/5 * * * * /usr/bin/python3 /var/lib/xray/traffic_collector.py >> /var/log/xray/traffic.log 2>&1"
+# 检查是否已存在
+result = subprocess.run(['crontab', '-l'], capture_output=True, text=True)
+existing_cron = result.stdout if result.returncode == 0 else ''
+if 'traffic_collector.py' not in existing_cron:
+    new_cron = existing_cron.rstrip() + chr(10) + cron_job + chr(10)
+    subprocess.run(['crontab', '-'], input=new_cron, text=True)
+    print("[INFO] Cron job added for traffic collection")
 
 print("")
 print("=" * 60)
@@ -277,7 +582,27 @@ else
     exit 1
 fi
 
-nginx -t && systemctl reload nginx
+# 停止 nginx 订阅服务（如果存在）
+if [ -f /etc/nginx/sites-enabled/clash-sub ]; then
+    rm -f /etc/nginx/sites-enabled/clash-sub
+    nginx -t && systemctl reload nginx 2>/dev/null || true
+fi
+
+# 启动 Python 订阅服务
+echo "[INFO] Starting subscription server..."
+systemctl daemon-reload
+systemctl enable sub-server
+systemctl restart sub-server
+sleep 2
+
+if [ "$(systemctl is-active sub-server)" = "active" ]; then
+    echo "[INFO] Subscription server OK"
+else
+    echo "[ERROR] Subscription server failed"
+    systemctl status sub-server
+    exit 1
+fi
+
 echo "[INFO] Sync completed"
 REMOTE_SCRIPT
 
