@@ -5,6 +5,7 @@ config.env
 users.yaml
 
 # 生成的用户链接和订阅文件
+subscriptions.txt
 user_links/
 *_link.txt
 *_url.txt

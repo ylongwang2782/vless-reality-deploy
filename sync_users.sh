@@ -260,12 +260,8 @@ rules:
     with open(f'/var/lib/xray/traffic/{name}.json', 'w') as f:
         json.dump(user_info, f, indent=2)
 
-    with open(f'/root/user_links/{name}_sub.txt', 'w') as f:
-        f.write(f"http://{ip}:{sub_port}/{sub_token}")
-
     results.append({
         "name": name,
-        "vless": vless_link,
         "sub_url": f"http://{ip}:{sub_port}/{sub_token}",
         "sub_token": sub_token
     })
@@ -553,6 +549,11 @@ if 'traffic_collector.py' not in existing_cron:
     subprocess.run(['crontab', '-'], input=new_cron, text=True)
     print("[INFO] Cron job added for traffic collection")
 
+# 生成合并的订阅链接文件
+with open('/root/subscriptions.txt', 'w') as f:
+    for r in results:
+        f.write(f"{r['name']}: {r['sub_url']}" + chr(10))
+
 print("")
 print("=" * 60)
 print("USER_LINKS_START")
@@ -640,15 +641,12 @@ EXPEOF
 
 expect /tmp/sync_expect.exp
 
-log_info "下载用户链接..."
+log_info "下载订阅链接..."
 
-# 创建本地输出目录
-mkdir -p "$SCRIPT_DIR/user_links"
-
-# 下载所有用户链接
+# 下载合并的订阅链接文件
 expect << EOF
 set timeout 60
-spawn scp -o StrictHostKeyChecking=no -r $VPS_USER@$VPS_IP:/root/user_links/* $SCRIPT_DIR/user_links/
+spawn scp -o StrictHostKeyChecking=no $VPS_USER@$VPS_IP:/root/subscriptions.txt $SCRIPT_DIR/
 expect {
     "password:" { send "$VPS_PASSWORD\r" }
     timeout { puts "Download timed out"; exit 1 }
@@ -690,22 +688,21 @@ if [ -n "$CF_API_TOKEN" ] && [ -n "$CF_DOMAIN" ] && [ -n "$CF_SUBDOMAIN" ]; then
         fi
     fi
 
-    for sub_file in "$SCRIPT_DIR/user_links/"*_sub.txt; do
-        if [ -f "$sub_file" ]; then
-            USERNAME=$(basename "$sub_file" _sub.txt)
+    # 更新订阅链接文件
+    if [ -f "$SCRIPT_DIR/subscriptions.txt" ]; then
+        > "$SCRIPT_DIR/subscriptions.txt.tmp"
+        while IFS=': ' read -r username url; do
             if [ "$ORIGIN_RULES_OK" = true ]; then
-                # Origin Rules 配置成功，使用不带端口的链接
-                echo "https://$CF_SUBDOMAIN.$CF_DOMAIN/$USERNAME" > "$sub_file"
+                echo "$username: https://$CF_SUBDOMAIN.$CF_DOMAIN/$username" >> "$SCRIPT_DIR/subscriptions.txt.tmp"
             else
-                # Origin Rules 配置失败，使用带端口的链接
-                echo "https://$CF_SUBDOMAIN.$CF_DOMAIN:$SUB_PORT/$USERNAME" > "$sub_file"
+                echo "$username: https://$CF_SUBDOMAIN.$CF_DOMAIN:$SUB_PORT/$username" >> "$SCRIPT_DIR/subscriptions.txt.tmp"
             fi
-        fi
-    done
+        done < "$SCRIPT_DIR/subscriptions.txt"
+        mv "$SCRIPT_DIR/subscriptions.txt.tmp" "$SCRIPT_DIR/subscriptions.txt"
+    fi
 
     if [ "$ORIGIN_RULES_OK" = false ]; then
         log_warn "Origin Rules 配置失败（需要额外 API 权限），使用带端口的链接"
-        log_warn "如需不带端口访问，请在 Cloudflare Dashboard 手动配置 Origin Rules"
     fi
 fi
 
@@ -716,14 +713,10 @@ log_info "用户同步完成！"
 log_info "=========================================="
 echo ""
 
-for sub_file in "$SCRIPT_DIR/user_links/"*_sub.txt; do
-    if [ -f "$sub_file" ]; then
-        username=$(basename "$sub_file" _sub.txt)
-        echo "用户: $username"
-        echo "订阅: $(cat "$sub_file")"
-        echo ""
-    fi
-done
+if [ -f "$SCRIPT_DIR/subscriptions.txt" ]; then
+    cat "$SCRIPT_DIR/subscriptions.txt"
+    echo ""
+fi
 
-log_info "链接文件保存在: $SCRIPT_DIR/user_links/"
+log_info "订阅链接保存在: $SCRIPT_DIR/subscriptions.txt"
 log_info "=========================================="
