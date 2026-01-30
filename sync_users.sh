@@ -209,9 +209,8 @@ for user in users:
             "email": email
         })
 
-    # 生成订阅 token
-    import hashlib
-    sub_token = f"{name}_{hashlib.md5(uuid.encode()).hexdigest()[:16]}"
+    # 使用用户名作为订阅路径（简洁）
+    sub_token = name
 
     node_name = f"{node_prefix}_{name}" if node_prefix else f"Reality_{name}"
 
@@ -582,13 +581,11 @@ else
     exit 1
 fi
 
-# 停止 nginx 订阅服务（如果存在）
-if [ -f /etc/nginx/sites-enabled/clash-sub ]; then
-    rm -f /etc/nginx/sites-enabled/clash-sub
-    nginx -t && systemctl reload nginx 2>/dev/null || true
-fi
+# 停止旧的 nginx 订阅配置（如果存在）
+rm -f /etc/nginx/sites-enabled/clash-sub /etc/nginx/sites-enabled/sub-proxy 2>/dev/null
+nginx -t && systemctl reload nginx 2>/dev/null || true
 
-# 启动 Python 订阅服务
+# 启动 Python 订阅服务（监听 8443，带 SSL）
 echo "[INFO] Starting subscription server..."
 systemctl daemon-reload
 systemctl enable sub-server
@@ -662,12 +659,54 @@ EOF
 # 如果配置了 Cloudflare，更新订阅链接为 HTTPS
 if [ -n "$CF_API_TOKEN" ] && [ -n "$CF_DOMAIN" ] && [ -n "$CF_SUBDOMAIN" ]; then
     log_info "更新订阅链接为 HTTPS..."
+
+    # 尝试配置 Origin Rules（可选，需要额外权限）
+    ZONE_ID=$(curl -s -X GET "https://api.cloudflare.com/client/v4/zones?name=$CF_DOMAIN" \
+        -H "Authorization: Bearer $CF_API_TOKEN" \
+        -H "Content-Type: application/json" 2>/dev/null | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
+
+    ORIGIN_RULES_OK=false
+    if [ -n "$ZONE_ID" ]; then
+        # 尝试配置 Origin Rules
+        RESULT=$(curl -s -X PUT "https://api.cloudflare.com/client/v4/zones/$ZONE_ID/rulesets/phases/http_request_origin/entrypoint" \
+            -H "Authorization: Bearer $CF_API_TOKEN" \
+            -H "Content-Type: application/json" \
+            --data "{
+                \"rules\": [{
+                    \"expression\": \"(http.host eq \\\"$CF_SUBDOMAIN.$CF_DOMAIN\\\")\",
+                    \"description\": \"sub-port-rule\",
+                    \"action\": \"route\",
+                    \"action_parameters\": {
+                        \"origin\": {
+                            \"port\": $SUB_PORT
+                        }
+                    }
+                }]
+            }" 2>/dev/null)
+
+        if echo "$RESULT" | grep -q '"success":true'; then
+            log_info "Origin Rules 配置成功（443 -> $SUB_PORT）"
+            ORIGIN_RULES_OK=true
+        fi
+    fi
+
     for sub_file in "$SCRIPT_DIR/user_links/"*_sub.txt; do
         if [ -f "$sub_file" ]; then
-            SUB_TOKEN=$(cat "$sub_file" | grep -oE '[a-z]+_[a-f0-9]+')
-            echo "https://$CF_SUBDOMAIN.$CF_DOMAIN:$SUB_PORT/$SUB_TOKEN" > "$sub_file"
+            USERNAME=$(basename "$sub_file" _sub.txt)
+            if [ "$ORIGIN_RULES_OK" = true ]; then
+                # Origin Rules 配置成功，使用不带端口的链接
+                echo "https://$CF_SUBDOMAIN.$CF_DOMAIN/$USERNAME" > "$sub_file"
+            else
+                # Origin Rules 配置失败，使用带端口的链接
+                echo "https://$CF_SUBDOMAIN.$CF_DOMAIN:$SUB_PORT/$USERNAME" > "$sub_file"
+            fi
         fi
     done
+
+    if [ "$ORIGIN_RULES_OK" = false ]; then
+        log_warn "Origin Rules 配置失败（需要额外 API 权限），使用带端口的链接"
+        log_warn "如需不带端口访问，请在 Cloudflare Dashboard 手动配置 Origin Rules"
+    fi
 fi
 
 # 输出结果
