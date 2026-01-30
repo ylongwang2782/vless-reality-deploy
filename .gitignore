@@ -1,0 +1,19 @@
+# 敏感配置文件（包含密码和 API Token）
+config.env
+
+# 生成的用户链接和订阅文件
+*_link.txt
+*_url.txt
+*_sub_url.txt
+*_vless_link.txt
+clash_vless.yaml
+clash_sub_url.txt
+vless_link.txt
+vless_qr.png
+
+# Claude Code
+.claude/
+
+# 临时文件
+*.tmp
+*.bak

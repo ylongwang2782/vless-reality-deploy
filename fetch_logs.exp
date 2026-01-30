@@ -1,0 +1,52 @@
+#!/usr/bin/expect
+
+# 从 config.env 读取配置
+set script_dir [file dirname [info script]]
+set config_file "$script_dir/config.env"
+
+if {![file exists $config_file]} {
+    puts "Error: config.env not found. Copy config.env.example to config.env and edit it."
+    exit 1
+}
+
+# 解析 config.env
+set fp [open $config_file r]
+while {[gets $fp line] >= 0} {
+    if {[regexp {^VPS_IP="(.+)"$} $line -> val]} { set ip $val }
+    if {[regexp {^VPS_PASSWORD="(.+)"$} $line -> val]} { set password $val }
+    if {[regexp {^VPS_USER="(.+)"$} $line -> val]} { set user $val }
+}
+close $fp
+
+if {![info exists ip] || ![info exists password]} {
+    puts "Error: VPS_IP and VPS_PASSWORD must be set in config.env"
+    exit 1
+}
+
+if {![info exists user]} { set user "root" }
+
+set timeout 30
+
+spawn ssh -o StrictHostKeyChecking=no $user@$ip
+
+expect {
+    "password:" { send "$password\r" }
+    timeout { puts "Connection timed out"; exit 1 }
+}
+
+expect "#"
+puts "--- Checking Config Content ---"
+send "cat /usr/local/etc/xray/config.json\r"
+
+expect "#"
+puts "--- Checking Xray Service Logs ---"
+send "journalctl -u xray -n 50 --no-pager\r"
+
+expect "#"
+puts "--- Checking if Port 443 is used ---"
+send "ss -tulpn | grep 443\r"
+
+expect "#"
+send "exit\r"
+
+expect eof
