@@ -138,14 +138,13 @@ if [ -n "$CF_API_TOKEN" ] && [ -n "$CF_DOMAIN" ] && [ -n "$CF_SUBDOMAIN" ]; then
     # ==========================================
     # Step 3: 配置 SSL 并启用 Cloudflare 代理
     # ==========================================
-    log_info "Step 3: 配置 SSL..."
+    log_info "Step 3: 配置 SSL 证书..."
 
-    # 生成 SSL 配置脚本
+    # 生成 SSL 配置脚本（只生成证书，订阅服务由 sync_users.sh 配置）
     cat > /tmp/setup_ssl.sh << 'SSLEOF'
 #!/bin/bash
-SUB_PORT=$1
-CF_SUBDOMAIN=$2
-CF_DOMAIN=$3
+CF_SUBDOMAIN=$1
+CF_DOMAIN=$2
 
 mkdir -p /etc/nginx/ssl
 openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
@@ -153,31 +152,7 @@ openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
     -out /etc/nginx/ssl/origin.crt \
     -subj "/CN=$CF_SUBDOMAIN.$CF_DOMAIN" 2>/dev/null
 
-SUB_TOKEN=$(cat /root/clash_sub_url.txt | grep -oE '[a-f0-9]{32}')
-
-cat > /etc/nginx/sites-available/clash-sub << EOF
-server {
-    listen $SUB_PORT ssl;
-    server_name $CF_SUBDOMAIN.$CF_DOMAIN;
-
-    ssl_certificate /etc/nginx/ssl/origin.crt;
-    ssl_certificate_key /etc/nginx/ssl/origin.key;
-    ssl_protocols TLSv1.2 TLSv1.3;
-
-    location /$SUB_TOKEN {
-        alias /var/www/sub/clash.yaml;
-        default_type 'text/yaml; charset=utf-8';
-        add_header Content-Disposition 'attachment; filename="clash.yaml"';
-    }
-
-    location / {
-        return 404;
-    }
-}
-EOF
-
-nginx -t && systemctl reload nginx
-echo "SSL configured"
+echo "SSL certificate generated"
 SSLEOF
 
     # 上传并执行 SSL 配置脚本
@@ -196,7 +171,7 @@ expect {
     timeout { exit 1 }
 }
 expect "#"
-send "chmod +x /root/setup_ssl.sh && /root/setup_ssl.sh '$SUB_PORT' '$CF_SUBDOMAIN' '$CF_DOMAIN'\r"
+send "chmod +x /root/setup_ssl.sh && /root/setup_ssl.sh '$CF_SUBDOMAIN' '$CF_DOMAIN'\r"
 expect "#"
 send "rm /root/setup_ssl.sh\r"
 expect "#"
@@ -221,10 +196,6 @@ EOF
         --data '{"proxied":true}' > /dev/null
 
     log_info "Cloudflare 代理已启用"
-
-    # 更新本地订阅链接
-    SUB_TOKEN=$(cat "$SCRIPT_DIR/clash_sub_url.txt" | grep -oE '[a-f0-9]{32}')
-    echo "https://$CF_SUBDOMAIN.$CF_DOMAIN:$SUB_PORT/$SUB_TOKEN" > "$SCRIPT_DIR/clash_sub_url.txt"
 
 else
     log_warn "未配置 Cloudflare，跳过域名和 SSL 配置"
