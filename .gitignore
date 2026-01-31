@@ -19,6 +19,9 @@ vless_qr.png
 # Claude Code
 .claude/
 
+# 生成的下载链接
+download_links.txt
+
 # 临时文件
 *.tmp
 *.bak
