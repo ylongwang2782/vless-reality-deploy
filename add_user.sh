@@ -21,6 +21,10 @@ CONFIG_FILE="$SCRIPT_DIR/config.env"
 
 source "$CONFIG_FILE"
 
+if [ -z "$VPS_SSH_PORT" ]; then
+    VPS_SSH_PORT="22"
+fi
+
 echo "[INFO] 添加用户: $USERNAME"
 [ "$TRAFFIC_LIMIT_GB" -gt 0 ] && echo "[INFO] 流量限制: ${TRAFFIC_LIMIT_GB}GB/月，每月${RESET_DAY}号重置"
 
@@ -209,14 +213,14 @@ REMOTE_SCRIPT
 # 上传并执行远程脚本
 expect << EOF
 set timeout 120
-spawn scp -o StrictHostKeyChecking=no /tmp/add_user_remote.sh $VPS_USER@$VPS_IP:/root/
+spawn scp -P $VPS_SSH_PORT -o StrictHostKeyChecking=no /tmp/add_user_remote.sh $VPS_USER@$VPS_IP:/root/
 expect {
     "password:" { send "$VPS_PASSWORD\r" }
     timeout { exit 1 }
 }
 expect eof
 
-spawn ssh -o StrictHostKeyChecking=no $VPS_USER@$VPS_IP
+spawn ssh -p $VPS_SSH_PORT -o StrictHostKeyChecking=no $VPS_USER@$VPS_IP
 expect {
     "password:" { send "$VPS_PASSWORD\r" }
     timeout { exit 1 }
@@ -244,7 +248,7 @@ fi
 for file in ${USERNAME}_vless_link.txt ${USERNAME}_sub_url.txt; do
     expect << EOF
 set timeout 30
-spawn scp -o StrictHostKeyChecking=no $VPS_USER@$VPS_IP:/root/$file $SCRIPT_DIR/
+spawn scp -P $VPS_SSH_PORT -o StrictHostKeyChecking=no $VPS_USER@$VPS_IP:/root/$file $SCRIPT_DIR/
 expect {
     "password:" { send "$VPS_PASSWORD\r" }
     timeout { continue }

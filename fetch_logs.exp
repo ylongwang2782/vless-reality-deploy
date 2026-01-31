@@ -15,6 +15,7 @@ while {[gets $fp line] >= 0} {
     if {[regexp {^VPS_IP="(.+)"$} $line -> val]} { set ip $val }
     if {[regexp {^VPS_PASSWORD="(.+)"$} $line -> val]} { set password $val }
     if {[regexp {^VPS_USER="(.+)"$} $line -> val]} { set user $val }
+    if {[regexp {^VPS_SSH_PORT="(.+)"$} $line -> val]} { set port $val }
 }
 close $fp
 
@@ -24,10 +25,11 @@ if {![info exists ip] || ![info exists password]} {
 }
 
 if {![info exists user]} { set user "root" }
+if {![info exists port]} { set port "22" }
 
 set timeout 30
 
-spawn ssh -o StrictHostKeyChecking=no $user@$ip
+spawn ssh -p $port -o StrictHostKeyChecking=no $user@$ip
 
 expect {
     "password:" { send "$password\r" }

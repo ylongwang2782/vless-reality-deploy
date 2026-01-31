@@ -28,6 +28,11 @@ fi
 # 加载配置
 source "$CONFIG_FILE"
 
+# 默认 SSH 端口
+if [ -z "$VPS_SSH_PORT" ]; then
+    VPS_SSH_PORT="22"
+fi
+
 # 验证必要配置
 if [ -z "$VPS_IP" ] || [ -z "$VPS_PASSWORD" ]; then
     log_error "VPS_IP 和 VPS_PASSWORD 必须配置"
@@ -54,10 +59,11 @@ set timeout 180
 set ip "$VPS_IP"
 set password "$VPS_PASSWORD"
 set user "$VPS_USER"
+set port "$VPS_SSH_PORT"
 set script_dir "$SCRIPT_DIR"
 
 # SCP install script
-spawn scp -o StrictHostKeyChecking=no \$script_dir/install_vless.sh \$user@\$ip:/root/
+spawn scp -P \$port -o StrictHostKeyChecking=no \$script_dir/install_vless.sh \$user@\$ip:/root/
 expect {
     "password:" { send "\$password\r" }
     timeout { puts "SCP timed out"; exit 1 }
@@ -65,7 +71,7 @@ expect {
 expect eof
 
 # SSH to run the script
-spawn ssh -o StrictHostKeyChecking=no \$user@\$ip
+spawn ssh -p \$port -o StrictHostKeyChecking=no \$user@\$ip
 expect {
     "password:" { send "\$password\r" }
     timeout { puts "SSH timed out"; exit 1 }
@@ -158,14 +164,14 @@ SSLEOF
     # 上传并执行 SSL 配置脚本
     expect << EOF
 set timeout 60
-spawn scp -o StrictHostKeyChecking=no /tmp/setup_ssl.sh $VPS_USER@$VPS_IP:/root/
+spawn scp -P $VPS_SSH_PORT -o StrictHostKeyChecking=no /tmp/setup_ssl.sh $VPS_USER@$VPS_IP:/root/
 expect {
     "password:" { send "$VPS_PASSWORD\r" }
     timeout { exit 1 }
 }
 expect eof
 
-spawn ssh -o StrictHostKeyChecking=no $VPS_USER@$VPS_IP
+spawn ssh -p $VPS_SSH_PORT -o StrictHostKeyChecking=no $VPS_USER@$VPS_IP
 expect {
     "password:" { send "$VPS_PASSWORD\r" }
     timeout { exit 1 }

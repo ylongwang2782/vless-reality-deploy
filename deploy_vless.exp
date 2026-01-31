@@ -15,6 +15,7 @@ while {[gets $fp line] >= 0} {
     if {[regexp {^VPS_IP="(.+)"$} $line -> val]} { set ip $val }
     if {[regexp {^VPS_PASSWORD="(.+)"$} $line -> val]} { set password $val }
     if {[regexp {^VPS_USER="(.+)"$} $line -> val]} { set user $val }
+    if {[regexp {^VPS_SSH_PORT="(.+)"$} $line -> val]} { set port $val }
 }
 close $fp
 
@@ -24,13 +25,14 @@ if {![info exists ip] || ![info exists password]} {
 }
 
 if {![info exists user]} { set user "root" }
+if {![info exists port]} { set port "22" }
 
 set timeout 120
 set script_name "install_vless.sh"
 set local_dir $script_dir
 
 # SCP the script to remote
-spawn scp -o StrictHostKeyChecking=no $local_dir/$script_name $user@$ip:/root/
+spawn scp -P $port -o StrictHostKeyChecking=no $local_dir/$script_name $user@$ip:/root/
 expect {
     "password:" { send "$password\r" }
     timeout { puts "SCP timed out"; exit 1 }
@@ -38,7 +40,7 @@ expect {
 expect eof
 
 # SSH to run the script
-spawn ssh -o StrictHostKeyChecking=no $user@$ip
+spawn ssh -p $port -o StrictHostKeyChecking=no $user@$ip
 expect {
     "password:" { send "$password\r" }
     timeout { puts "SSH timed out"; exit 1 }
@@ -63,7 +65,7 @@ expect eof
 puts "\n--- Downloading Generated Files ---"
 
 # Download vless_link.txt
-spawn scp -o StrictHostKeyChecking=no $user@$ip:/root/vless_link.txt $local_dir/
+spawn scp -P $port -o StrictHostKeyChecking=no $user@$ip:/root/vless_link.txt $local_dir/
 expect {
     "password:" { send "$password\r" }
     timeout { puts "Download vless_link.txt timed out"; exit 1 }
@@ -71,7 +73,7 @@ expect {
 expect eof
 
 # Download clash_vless.yaml
-spawn scp -o StrictHostKeyChecking=no $user@$ip:/root/clash_vless.yaml $local_dir/
+spawn scp -P $port -o StrictHostKeyChecking=no $user@$ip:/root/clash_vless.yaml $local_dir/
 expect {
     "password:" { send "$password\r" }
     timeout { puts "Download clash_vless.yaml timed out"; exit 1 }
@@ -79,7 +81,7 @@ expect {
 expect eof
 
 # Download vless_qr.png
-spawn scp -o StrictHostKeyChecking=no $user@$ip:/root/vless_qr.png $local_dir/
+spawn scp -P $port -o StrictHostKeyChecking=no $user@$ip:/root/vless_qr.png $local_dir/
 expect {
     "password:" { send "$password\r" }
     timeout { puts "Download vless_qr.png timed out"; exit 1 }
@@ -87,7 +89,7 @@ expect {
 expect eof
 
 # Download clash_sub_url.txt
-spawn scp -o StrictHostKeyChecking=no $user@$ip:/root/clash_sub_url.txt $local_dir/
+spawn scp -P $port -o StrictHostKeyChecking=no $user@$ip:/root/clash_sub_url.txt $local_dir/
 expect {
     "password:" { send "$password\r" }
     timeout { puts "Download clash_sub_url.txt timed out"; exit 1 }

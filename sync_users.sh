@@ -34,6 +34,10 @@ fi
 
 source "$CONFIG_FILE"
 
+if [ -z "$VPS_SSH_PORT" ]; then
+    VPS_SSH_PORT="22"
+fi
+
 # 验证必要配置
 if [ -z "$VPS_IP" ] || [ -z "$VPS_PASSWORD" ]; then
     log_error "VPS_IP 和 VPS_PASSWORD 必须在 config.env 中配置"
@@ -616,7 +620,7 @@ cat > /tmp/sync_expect.exp << EXPEOF
 set timeout 300
 
 # 上传脚本和配置
-spawn scp -o StrictHostKeyChecking=no /tmp/sync_users_remote.sh $USERS_FILE $VPS_USER@$VPS_IP:/tmp/
+spawn scp -P $VPS_SSH_PORT -o StrictHostKeyChecking=no /tmp/sync_users_remote.sh $USERS_FILE $VPS_USER@$VPS_IP:/tmp/
 expect {
     "password:" { send "$VPS_PASSWORD\r" }
     timeout { puts "SCP timed out"; exit 1 }
@@ -624,7 +628,7 @@ expect {
 expect eof
 
 # 执行脚本
-spawn ssh -o StrictHostKeyChecking=no $VPS_USER@$VPS_IP
+spawn ssh -p $VPS_SSH_PORT -o StrictHostKeyChecking=no $VPS_USER@$VPS_IP
 expect {
     "password:" { send "$VPS_PASSWORD\r" }
     timeout { puts "SSH timed out"; exit 1 }
@@ -650,7 +654,7 @@ log_info "下载订阅链接..."
 # 下载合并的订阅链接文件
 expect << EOF
 set timeout 60
-spawn scp -o StrictHostKeyChecking=no $VPS_USER@$VPS_IP:/root/subscriptions.txt $SCRIPT_DIR/
+spawn scp -P $VPS_SSH_PORT -o StrictHostKeyChecking=no $VPS_USER@$VPS_IP:/root/subscriptions.txt $SCRIPT_DIR/
 expect {
     "password:" { send "$VPS_PASSWORD\r" }
     timeout { puts "Download timed out"; exit 1 }
