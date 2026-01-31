@@ -1,8 +1,9 @@
 #!/bin/bash
 
 # ==========================================
-# 主节点部署脚本
-# 部署第一个节点并设置订阅服务
+# 远程节点部署脚本
+# 用法: ./deploy_node.sh <节点名>
+# 示例: ./deploy_node.sh USA
 # ==========================================
 
 set -e
@@ -22,76 +23,105 @@ log_warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 log_step() { echo -e "${BLUE}[STEP]${NC} $1"; }
 
-# 检查依赖
-check_dependencies() {
-    if ! command -v python3 &> /dev/null; then
-        log_error "需要安装 python3"
-        exit 1
-    fi
+# 检查参数
+if [ -z "$1" ]; then
+    log_error "请指定节点名"
+    echo ""
+    echo "用法: $0 <节点名>"
+    echo ""
+    echo "可用节点:"
 
-    if ! command -v expect &> /dev/null; then
-        log_error "需要安装 expect"
-        exit 1
+    if [ -f "$CONFIG_FILE" ]; then
+        python3 << 'PY'
+import yaml
+with open('config.yaml', 'r') as f:
+    config = yaml.safe_load(f)
+for i, node in enumerate(config.get('nodes', [])):
+    marker = "(主节点)" if i == 0 else ""
+    status = "✓" if node.get('public_key') else "○"
+    print(f"  {status} {node['name']} - {node['server']} {marker}")
+PY
     fi
+    echo ""
+    echo "  ✓ = 已部署, ○ = 未部署"
+    exit 1
+fi
 
-    python3 -c "import yaml" 2>/dev/null || {
-        log_info "安装 PyYAML..."
-        pip3 install --user pyyaml -q 2>/dev/null || pip3 install pyyaml --break-system-packages -q
-    }
-}
+NODE_NAME="$1"
 
 # 检查配置文件
 if [ ! -f "$CONFIG_FILE" ]; then
     log_error "配置文件不存在: $CONFIG_FILE"
-    log_info "请先复制 config.yaml.example 为 config.yaml 并编辑"
     exit 1
 fi
 
-check_dependencies
+# 检查依赖
+python3 -c "import yaml" 2>/dev/null || {
+    log_info "安装 PyYAML..."
+    pip3 install --user pyyaml -q 2>/dev/null || pip3 install pyyaml --break-system-packages -q
+}
 
 log_info "=========================================="
-log_info "VLESS + Reality 主节点部署"
+log_info "部署远程节点: $NODE_NAME"
 log_info "=========================================="
 
-# 使用 Python 解析配置并部署
-python3 << 'PYTHON_SCRIPT'
+# 使用 Python 部署节点
+python3 << PYTHON_SCRIPT
 import yaml
 import subprocess
 import os
 import sys
 
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__)) if '__file__' in dir() else os.getcwd()
+SCRIPT_DIR = os.getcwd()
+NODE_NAME = "$NODE_NAME"
 
 # 读取配置
 with open(f'{SCRIPT_DIR}/config.yaml', 'r') as f:
     config = yaml.safe_load(f)
 
 nodes = config.get('nodes', [])
-cloudflare = config.get('cloudflare', {})
-sub_port = config.get('sub_port', 8443)
 
-if not nodes:
-    print("[ERROR] 没有配置任何节点")
+# 查找目标节点
+target_node = None
+target_index = -1
+for i, node in enumerate(nodes):
+    if node['name'].lower() == NODE_NAME.lower():
+        target_node = node
+        target_index = i
+        break
+
+if not target_node:
+    print(f"[ERROR] 未找到节点: {NODE_NAME}")
+    print("\n可用节点:")
+    for node in nodes:
+        print(f"  - {node['name']}")
     sys.exit(1)
 
-# 获取主节点（第一个节点）
-main_node = nodes[0]
-if 'ssh' not in main_node:
-    print("[ERROR] 主节点必须配置 SSH 信息")
+if 'ssh' not in target_node:
+    print(f"[ERROR] 节点 {NODE_NAME} 未配置 SSH 信息")
     sys.exit(1)
 
-ssh = main_node['ssh']
-server = main_node['server']
-name = main_node['name']
+ssh = target_node['ssh']
+server = target_node['server']
+name = target_node['name']
 
-print(f"[INFO] 主节点: {name} ({server})")
+print(f"[INFO] 节点: {name}")
+print(f"[INFO] 服务器: {server}")
 print(f"[INFO] SSH 端口: {ssh.get('port', 22)}")
+
+# 检查是否已部署
+if target_node.get('public_key'):
+    print(f"[WARN] 节点 {name} 已部署过")
+    print(f"       Public Key: {target_node['public_key']}")
+    print(f"       Short ID: {target_node['short_id']}")
+    response = input("\n是否重新部署? (y/N): ")
+    if response.lower() != 'y':
+        sys.exit(0)
 
 # 生成安装脚本
 install_script = f'''#!/bin/bash
 set -e
 
-SUB_PORT="{sub_port}"
 NODE_NAME="{name}"
 
 echo "=== 开启 BBR ==="
@@ -102,7 +132,7 @@ if ! grep -q "net.ipv4.tcp_congestion_control = bbr" /etc/sysctl.conf; then
 fi
 
 echo "=== 安装 Xray ==="
-apt-get update && apt-get install -y curl python3 python3-pip nginx
+apt-get update && apt-get install -y curl python3 python3-pip
 pip3 install pyyaml -q 2>/dev/null || pip3 install pyyaml --break-system-packages -q
 
 bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install
@@ -158,7 +188,7 @@ User=xray
 Group=xray
 SVC_EOF
 
-mkdir -p /var/log/xray /var/www/sub /var/www/downloads /var/lib/xray/traffic
+mkdir -p /var/log/xray /var/lib/xray/traffic
 chown -R xray:xray /var/log/xray
 chmod 644 /usr/local/etc/xray/config.json
 
@@ -166,17 +196,9 @@ systemctl daemon-reload
 systemctl restart xray
 systemctl enable xray
 
-echo "=== 配置 SSL 证书 ==="
-mkdir -p /etc/nginx/ssl
-openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \\
-    -keyout /etc/nginx/ssl/origin.key \\
-    -out /etc/nginx/ssl/origin.crt \\
-    -subj "/CN=sub.example.com" 2>/dev/null
-
 echo "=== 配置防火墙 ==="
 if command -v ufw &> /dev/null; then
     ufw allow 443/tcp >/dev/null 2>&1
-    ufw allow $SUB_PORT/tcp >/dev/null 2>&1
 fi
 
 sleep 2
@@ -193,7 +215,7 @@ fi
 '''
 
 # 保存安装脚本
-with open('/tmp/install_main.sh', 'w') as f:
+with open('/tmp/install_node.sh', 'w') as f:
     f.write(install_script)
 
 # 生成 expect 脚本
@@ -205,7 +227,7 @@ expect_script = f'''
 set timeout 300
 
 # 上传脚本
-spawn scp -P {ssh_port} -o StrictHostKeyChecking=no /tmp/install_main.sh {ssh_user}@{server}:/tmp/
+spawn scp -P {ssh_port} -o StrictHostKeyChecking=no /tmp/install_node.sh {ssh_user}@{server}:/tmp/
 expect {{
     "password:" {{ send "{ssh_pass}\\r" }}
     timeout {{ puts "SCP timeout"; exit 1 }}
@@ -219,20 +241,20 @@ expect {{
     timeout {{ puts "SSH timeout"; exit 1 }}
 }}
 expect "#"
-send "chmod +x /tmp/install_main.sh && /tmp/install_main.sh\\r"
+send "chmod +x /tmp/install_node.sh && /tmp/install_node.sh\\r"
 expect {{
     "DEPLOY_SUCCESS" {{ }}
     "DEPLOY_FAILED" {{ puts "Deploy failed"; exit 1 }}
     timeout {{ puts "Install timeout"; exit 1 }}
 }}
 expect "#"
-send "rm -f /tmp/install_main.sh\\r"
+send "rm -f /tmp/install_node.sh\\r"
 expect "#"
 send "exit\\r"
 expect eof
 '''
 
-print("\n[STEP] 部署主节点...")
+print(f"\n[STEP] 部署节点 {name}...")
 result = subprocess.run(['expect', '-c', expect_script], capture_output=True, text=True, timeout=360)
 
 # 提取密钥信息
@@ -250,95 +272,28 @@ if public_key and short_id:
     print(f"[INFO] Short ID: {short_id}")
 
     # 更新配置文件
-    main_node['public_key'] = public_key
-    main_node['short_id'] = short_id
+    config['nodes'][target_index]['public_key'] = public_key
+    config['nodes'][target_index]['short_id'] = short_id
 
     with open(f'{SCRIPT_DIR}/config.yaml', 'w') as f:
         yaml.dump(config, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
 
     print("[INFO] 已更新 config.yaml")
+
+    print("\n" + "=" * 50)
+    print(f"[INFO] 节点 {name} 部署完成!")
+    print("=" * 50)
+
+    # 检查还有哪些节点未部署
+    undeployed = [n['name'] for n in config['nodes'] if not n.get('public_key')]
+    if undeployed:
+        print(f"\n待部署节点: {', '.join(undeployed)}")
+        print(f"运行: ./deploy_node.sh <节点名>")
+    else:
+        print("\n所有节点已部署完成!")
+        print("运行 ./sync_users.sh 同步用户")
 else:
-    print("[WARN] 无法获取密钥信息，请手动获取")
+    print("[ERROR] 部署失败，无法获取密钥信息")
     print(result.stdout[-2000:] if len(result.stdout) > 2000 else result.stdout)
-
-# 配置 Cloudflare（如果有）
-if cloudflare.get('api_token') and cloudflare.get('domain'):
-    print("\n[STEP] 配置 Cloudflare DNS...")
-
-    import urllib.request
-    import json
-
-    api_token = cloudflare['api_token']
-    domain = cloudflare['domain']
-    subdomain = cloudflare.get('subdomain', 'sub')
-
-    headers = {
-        'Authorization': f'Bearer {api_token}',
-        'Content-Type': 'application/json'
-    }
-
-    # 获取 Zone ID
-    try:
-        req = urllib.request.Request(
-            f'https://api.cloudflare.com/client/v4/zones?name={domain}',
-            headers=headers
-        )
-        with urllib.request.urlopen(req) as resp:
-            data = json.loads(resp.read().decode())
-            zone_id = data['result'][0]['id'] if data['result'] else None
-
-        if zone_id:
-            # 检查记录是否存在
-            req = urllib.request.Request(
-                f'https://api.cloudflare.com/client/v4/zones/{zone_id}/dns_records?name={subdomain}.{domain}',
-                headers=headers
-            )
-            with urllib.request.urlopen(req) as resp:
-                data = json.loads(resp.read().decode())
-                record_id = data['result'][0]['id'] if data['result'] else None
-
-            dns_data = json.dumps({
-                "type": "A",
-                "name": subdomain,
-                "content": server,
-                "ttl": 1,
-                "proxied": True
-            }).encode()
-
-            if record_id:
-                # 更新记录
-                req = urllib.request.Request(
-                    f'https://api.cloudflare.com/client/v4/zones/{zone_id}/dns_records/{record_id}',
-                    data=dns_data,
-                    headers=headers,
-                    method='PUT'
-                )
-            else:
-                # 创建记录
-                req = urllib.request.Request(
-                    f'https://api.cloudflare.com/client/v4/zones/{zone_id}/dns_records',
-                    data=dns_data,
-                    headers=headers,
-                    method='POST'
-                )
-
-            with urllib.request.urlopen(req) as resp:
-                pass
-
-            print(f"[INFO] DNS 配置完成: {subdomain}.{domain} -> {server}")
-    except Exception as e:
-        print(f"[WARN] Cloudflare 配置失败: {e}")
-
-print("\n" + "=" * 50)
-print("[INFO] 主节点部署完成!")
-print("=" * 50)
-print(f"\n节点: {name}")
-print(f"服务器: {server}")
-if public_key:
-    print(f"Public Key: {public_key}")
-    print(f"Short ID: {short_id}")
-print("\n下一步:")
-print("  1. 运行 ./deploy_node.sh <节点名> 部署其他节点")
-print("  2. 运行 ./sync_users.sh 同步用户")
-print("  3. 运行 ./setup_downloads.sh 设置客户端下载")
+    sys.exit(1)
 PYTHON_SCRIPT
