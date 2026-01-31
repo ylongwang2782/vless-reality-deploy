@@ -1,14 +1,14 @@
 #!/bin/bash
 
 # ==========================================
-# 用户同步脚本
-# 读取 users.yaml 配置，同步用户到 VPS
+# 用户同步脚本 (多节点版本)
+# 读取 config.yaml 和 users.yaml，同步用户到所有 VPS
 # ==========================================
 
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-CONFIG_FILE="$SCRIPT_DIR/config.env"
+CONFIG_FILE="$SCRIPT_DIR/config.yaml"
 USERS_FILE="$SCRIPT_DIR/users.yaml"
 
 # 颜色输出
@@ -21,56 +21,87 @@ log_info() { echo -e "${GREEN}[INFO]${NC} $1"; }
 log_warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 
+# 检查依赖
+check_dependencies() {
+    if ! command -v python3 &> /dev/null; then
+        log_error "需要安装 python3"
+        exit 1
+    fi
+
+    python3 -c "import yaml" 2>/dev/null || {
+        log_info "安装 PyYAML..."
+        pip3 install pyyaml -q
+    }
+}
+
 # 检查配置文件
 if [ ! -f "$CONFIG_FILE" ]; then
-    log_error "config.env 不存在，请先复制 config.env.example 并编辑"
+    # 兼容旧版 config.env
+    if [ -f "$SCRIPT_DIR/config.env" ]; then
+        log_warn "检测到旧版 config.env，请迁移到 config.yaml"
+        log_info "参考 config.yaml.example 创建新配置文件"
+    fi
+    log_error "config.yaml 不存在"
     exit 1
 fi
 
 if [ ! -f "$USERS_FILE" ]; then
-    log_error "users.yaml 不存在，请先复制 users.yaml.example 并编辑"
+    log_error "users.yaml 不存在"
     exit 1
 fi
 
-source "$CONFIG_FILE"
-
-if [ -z "$VPS_SSH_PORT" ]; then
-    VPS_SSH_PORT="22"
-fi
-
-# 验证必要配置
-if [ -z "$VPS_IP" ] || [ -z "$VPS_PASSWORD" ]; then
-    log_error "VPS_IP 和 VPS_PASSWORD 必须在 config.env 中配置"
-    exit 1
-fi
+check_dependencies
 
 log_info "=========================================="
-log_info "同步用户配置到 VPS"
+log_info "同步用户配置 (多节点模式)"
 log_info "=========================================="
 
-# 生成远程执行脚本（从文件读取 YAML）
-cat > /tmp/sync_users_remote.sh << 'REMOTE_SCRIPT'
-#!/bin/bash
+# 使用 Python 解析配置并执行同步
+python3 << 'PYTHON_SCRIPT'
+import yaml
+import json
+import subprocess
+import os
+import sys
+import tempfile
 
+SCRIPT_DIR = os.environ.get('SCRIPT_DIR', os.path.dirname(os.path.abspath(__file__)))
+if not SCRIPT_DIR:
+    SCRIPT_DIR = os.getcwd()
+
+# 读取配置
+with open(f'{SCRIPT_DIR}/config.yaml', 'r') as f:
+    config = yaml.safe_load(f)
+
+with open(f'{SCRIPT_DIR}/users.yaml', 'r') as f:
+    users_config = yaml.safe_load(f)
+
+main_vps = config['main_vps']
+cloudflare = config.get('cloudflare', {})
+sub_port = config.get('sub_port', 8443)
+nodes = config.get('nodes', [])
+users = users_config.get('users', [])
+
+print(f"[INFO] 主 VPS: {main_vps['ip']}")
+print(f"[INFO] 节点数量: {len(nodes)}")
+print(f"[INFO] 用户数量: {len(users)}")
+
+# 生成远程同步脚本
+def generate_remote_script(node_config, is_main=True):
+    """生成在 VPS 上执行的脚本"""
+    return '''#!/bin/bash
 USERS_YAML_FILE="$1"
 SUB_PORT="$2"
-NODE_PREFIX="$3"
+IS_MAIN="$3"
 
 XRAY_BIN="/usr/local/bin/xray"
 CONFIG_FILE="/usr/local/etc/xray/config.json"
 TRAFFIC_DIR="/var/lib/xray/traffic"
 SUB_DIR="/var/www/sub"
-OUTPUT_DIR="/root/user_links"
 
-mkdir -p "$TRAFFIC_DIR" "$SUB_DIR" "$OUTPUT_DIR"
+mkdir -p "$TRAFFIC_DIR" "$SUB_DIR"
 
-# 检查 Python3 和 PyYAML
-if ! command -v python3 &> /dev/null; then
-    echo "[ERROR] Python3 not found"
-    exit 1
-fi
-
-# 安装 PyYAML 如果不存在
+# 安装 PyYAML
 python3 -c "import yaml" 2>/dev/null || pip3 install pyyaml -q
 
 # 获取服务器信息
@@ -81,7 +112,6 @@ KEYS=$(python3 << 'PY'
 import json
 with open('/usr/local/etc/xray/config.json') as f:
     c = json.load(f)
-# 找到 VLESS inbound（带有 streamSettings 的）
 for inb in c['inbounds']:
     if 'streamSettings' in inb:
         rs = inb['streamSettings']['realitySettings']
@@ -95,219 +125,274 @@ PK=$(echo "$KEYS" | head -1)
 SID=$(echo "$KEYS" | tail -1)
 PUB=$($XRAY_BIN x25519 -i "$PK" 2>&1 | grep "Password" | awk '{print $2}')
 
-echo "[INFO] Server IP: $IP"
-echo "[INFO] Public Key: $PUB"
-echo "[INFO] Short ID: $SID"
+echo "NODE_INFO:$IP:$PUB:$SID"
 
-# 解析 YAML 并处理用户
-python3 << PYTHON_SCRIPT
+# 解析用户并更新 Xray 配置
+python3 << PYEOF
 import yaml
 import json
 import subprocess
 import os
 
-# 从文件读取 YAML
 with open('$USERS_YAML_FILE', 'r') as f:
     users_config = yaml.safe_load(f)
 
-sub_port = "$SUB_PORT"
-node_prefix = "$NODE_PREFIX"
-ip = "$IP"
-pub = "$PUB"
-sid = "$SID"
-
 users = users_config.get('users', [])
 
-if not users:
-    print("[WARN] No users defined in users.yaml")
-    exit(0)
-
-# 读取现有 Xray 配置
+# 读取 Xray 配置
 with open('/usr/local/etc/xray/config.json', 'r') as f:
     xray_config = json.load(f)
 
-# 确保 stats 配置存在
-if 'stats' not in xray_config:
-    xray_config['stats'] = {}
-
-if 'api' not in xray_config:
-    xray_config['api'] = {
-        "tag": "api",
-        "services": ["StatsService"]
-    }
-
-if 'policy' not in xray_config:
-    xray_config['policy'] = {
-        "levels": {
-            "0": {
-                "statsUserUplink": True,
-                "statsUserDownlink": True
-            }
-        },
-        "system": {
-            "statsInboundUplink": True,
-            "statsInboundDownlink": True,
-            "statsOutboundUplink": True,
-            "statsOutboundDownlink": True
-        }
-    }
-
-# 确保 API inbound 存在
-api_inbound_exists = False
-vless_inbound_idx = 0
+# 找到 VLESS inbound
+vless_idx = 0
 for i, inb in enumerate(xray_config['inbounds']):
-    if inb.get('tag') == 'api':
-        api_inbound_exists = True
     if inb.get('protocol') == 'vless':
-        vless_inbound_idx = i
-        if 'tag' not in inb:
-            inb['tag'] = 'vless-in'
+        vless_idx = i
+        break
 
-if not api_inbound_exists:
-    xray_config['inbounds'].insert(0, {
-        "tag": "api",
-        "port": 10085,
-        "listen": "127.0.0.1",
-        "protocol": "dokodemo-door",
-        "settings": {
-            "address": "127.0.0.1"
-        }
-    })
-    vless_inbound_idx += 1
+existing_emails = {c['email'] for c in xray_config['inbounds'][vless_idx]['settings']['clients']}
 
-# 确保路由规则存在
-if 'routing' not in xray_config:
-    xray_config['routing'] = {"rules": []}
-
-api_rule_exists = any(r.get('outboundTag') == 'api' for r in xray_config['routing'].get('rules', []))
-if not api_rule_exists:
-    xray_config['routing']['rules'].insert(0, {
-        "inboundTag": ["api"],
-        "outboundTag": "api",
-        "type": "field"
-    })
-
-# 获取现有用户 (使用正确的 inbound 索引)
-existing_emails = {c['email'] for c in xray_config['inbounds'][vless_inbound_idx]['settings']['clients']}
-
-# 处理每个用户
-results = []
 new_clients = []
-
 for user in users:
     name = user['name']
-    traffic_limit = user.get('traffic_limit_gb', 0)
-    reset_day = user.get('reset_day', 1)
     email = f"{name}@vps"
 
-    # 检查用户是否已存在
-    if email in existing_emails:
-        for client in xray_config['inbounds'][vless_inbound_idx]['settings']['clients']:
-            if client['email'] == email:
-                uuid = client['id']
-                break
-        print(f"[INFO] User {name} already exists, UUID: {uuid}")
-    else:
+    if email not in existing_emails:
         result = subprocess.run(['/usr/local/bin/xray', 'uuid'], capture_output=True, text=True)
         uuid = result.stdout.strip()
-        print(f"[INFO] Creating user {name}, UUID: {uuid}")
         new_clients.append({
             "id": uuid,
             "flow": "xtls-rprx-vision",
             "email": email
         })
-
-    # 使用用户名作为订阅路径（简洁）
-    sub_token = name
-
-    node_name = node_prefix if node_prefix else "Reality"
-
-    vless_link = f"vless://{uuid}@{ip}:443?security=reality&encryption=none&pbk={pub}&headerType=none&fp=chrome&type=tcp&flow=xtls-rprx-vision&sni=www.apple.com&sid={sid}#{node_name}"
-
-    clash_yaml = f'''# Clash Meta Configuration for {name}
-
-proxies:
-  - name: "{node_name}"
-    type: vless
-    server: {ip}
-    port: 443
-    uuid: {uuid}
-    network: tcp
-    tls: true
-    udp: true
-    flow: xtls-rprx-vision
-    servername: www.apple.com
-    reality-opts:
-      public-key: {pub}
-      short-id: {sid}
-    client-fingerprint: chrome
-
-proxy-groups:
-  - name: "Proxy"
-    type: select
-    proxies:
-      - {node_name}
-      - DIRECT
-
-rules:
-  - GEOIP,CN,DIRECT
-  - MATCH,Proxy
-'''
-
-    with open(f'/var/www/sub/{name}.yaml', 'w') as f:
-        f.write(clash_yaml)
-
-    user_info = {
-        "username": name,
-        "uuid": uuid,
-        "email": email,
-        "sub_token": sub_token,
-        "traffic_limit_gb": traffic_limit,
-        "reset_day": reset_day
-    }
-    with open(f'/var/lib/xray/traffic/{name}.json', 'w') as f:
-        json.dump(user_info, f, indent=2)
-
-    results.append({
-        "name": name,
-        "sub_url": f"http://{ip}:{sub_port}/{sub_token}",
-        "sub_token": sub_token
-    })
+        print(f"[INFO] Created user {name}: {uuid}")
+    else:
+        for client in xray_config['inbounds'][vless_idx]['settings']['clients']:
+            if client['email'] == email:
+                print(f"[INFO] User {name} exists: {client['id']}")
+                break
 
 if new_clients:
-    xray_config['inbounds'][vless_inbound_idx]['settings']['clients'].extend(new_clients)
+    xray_config['inbounds'][vless_idx]['settings']['clients'].extend(new_clients)
     with open('/usr/local/etc/xray/config.json', 'w') as f:
         json.dump(xray_config, f, indent=4)
-    print(f"[INFO] Added {len(new_clients)} new user(s)")
 
-# 生成订阅服务的路由配置
-sub_routes = {}
-for r in results:
-    user_config_path = f"/var/lib/xray/traffic/{r['name']}.json"
-    sub_routes[r['sub_token']] = {
-        'name': r['name'],
-        'yaml_path': f"/var/www/sub/{r['name']}.yaml",
-        'config_path': user_config_path
-    }
+# 输出所有用户的 UUID
+print("USER_UUIDS_START")
+for client in xray_config['inbounds'][vless_idx]['settings']['clients']:
+    if '@vps' in client['email']:
+        name = client['email'].replace('@vps', '')
+        print(f"{name}:{client['id']}")
+print("USER_UUIDS_END")
+PYEOF
 
-with open('/var/www/sub/routes.json', 'w') as f:
-    json.dump(sub_routes, f, indent=2)
+# 重启 Xray
+if $XRAY_BIN run -test -config $CONFIG_FILE > /dev/null 2>&1; then
+    systemctl restart xray
+    sleep 2
+    if [ "$(systemctl is-active xray)" = "active" ]; then
+        echo "[INFO] Xray restarted successfully"
+    fi
+fi
 
-# 创建 Python 订阅服务
-sub_service = '''#!/usr/bin/env python3
+echo "SYNC_DONE"
+'''
+
+def run_ssh_command(host, port, user, password, command, timeout=120):
+    """通过 SSH 执行命令"""
+    expect_script = f'''
+set timeout {timeout}
+spawn ssh -p {port} -o StrictHostKeyChecking=no {user}@{host}
+expect {{
+    "password:" {{ send "{password}\\r" }}
+    timeout {{ puts "SSH timeout"; exit 1 }}
+}}
+expect "#"
+send "{command}\\r"
+expect {{
+    "SYNC_DONE" {{ }}
+    timeout {{ puts "Command timeout"; exit 1 }}
+}}
+expect "#"
+send "exit\\r"
+expect eof
+'''
+    result = subprocess.run(['expect', '-c', expect_script], capture_output=True, text=True, timeout=timeout+30)
+    return result.stdout
+
+def upload_and_run(host, port, user, password, local_files, remote_script, timeout=180):
+    """上传文件并执行脚本"""
+    # 生成 expect 脚本
+    scp_files = ' '.join(local_files)
+    expect_script = f'''
+set timeout {timeout}
+
+# 上传文件
+spawn scp -P {port} -o StrictHostKeyChecking=no {scp_files} {user}@{host}:/tmp/
+expect {{
+    "password:" {{ send "{password}\\r" }}
+    timeout {{ puts "SCP timeout"; exit 1 }}
+}}
+expect eof
+
+# 执行脚本
+spawn ssh -p {port} -o StrictHostKeyChecking=no {user}@{host}
+expect {{
+    "password:" {{ send "{password}\\r" }}
+    timeout {{ puts "SSH timeout"; exit 1 }}
+}}
+expect "#"
+send "chmod +x /tmp/sync_remote.sh && /tmp/sync_remote.sh /tmp/users.yaml '{sub_port}' 'true'\\r"
+expect {{
+    "SYNC_DONE" {{ }}
+    timeout {{ puts "Script timeout"; exit 1 }}
+}}
+expect "#"
+send "rm -f /tmp/sync_remote.sh /tmp/users.yaml\\r"
+expect "#"
+send "exit\\r"
+expect eof
+'''
+    result = subprocess.run(['expect', '-c', expect_script], capture_output=True, text=True, timeout=timeout+30)
+    return result.stdout
+
+# 同步主 VPS
+print("\n[INFO] 同步主 VPS...")
+
+# 保存远程脚本
+with open('/tmp/sync_remote.sh', 'w') as f:
+    f.write(generate_remote_script(main_vps, is_main=True))
+
+# 复制 users.yaml
+subprocess.run(['cp', f'{SCRIPT_DIR}/users.yaml', '/tmp/users.yaml'])
+
+# 执行同步
+output = upload_and_run(
+    main_vps['ip'],
+    main_vps.get('ssh_port', 22),
+    main_vps.get('user', 'root'),
+    main_vps['password'],
+    ['/tmp/sync_remote.sh', '/tmp/users.yaml'],
+    '/tmp/sync_remote.sh'
+)
+
+# 解析主节点信息
+main_node_info = None
+main_user_uuids = {}
+
+for line in output.split('\n'):
+    if line.startswith('NODE_INFO:'):
+        parts = line.replace('NODE_INFO:', '').split(':')
+        if len(parts) >= 3:
+            main_node_info = {
+                'ip': parts[0],
+                'public_key': parts[1],
+                'short_id': parts[2]
+            }
+            print(f"[INFO] 主节点: {main_node_info['ip']}")
+
+    if 'USER_UUIDS_START' in output:
+        in_uuids = False
+        for l in output.split('\n'):
+            if 'USER_UUIDS_START' in l:
+                in_uuids = True
+                continue
+            if 'USER_UUIDS_END' in l:
+                break
+            if in_uuids and ':' in l:
+                parts = l.strip().split(':')
+                if len(parts) >= 2:
+                    name = parts[0].strip()
+                    uuid = parts[1].strip()
+                    if name and uuid and len(uuid) == 36:
+                        main_user_uuids[name] = uuid
+
+print(f"[INFO] 获取到 {len(main_user_uuids)} 个用户 UUID")
+
+# 同步远程节点
+remote_nodes_info = []
+for node in nodes:
+    if node['type'] == 'remote' and 'ssh' in node:
+        print(f"\n[INFO] 同步远程节点: {node['name']}...")
+
+        ssh_config = node['ssh']
+        output = upload_and_run(
+            node['server'],
+            ssh_config.get('port', 22),
+            ssh_config.get('user', 'root'),
+            ssh_config['password'],
+            ['/tmp/sync_remote.sh', '/tmp/users.yaml'],
+            '/tmp/sync_remote.sh'
+        )
+
+        # 远程节点信息已经在 config.yaml 中配置
+        remote_nodes_info.append({
+            'name': node['name'],
+            'server': node['server'],
+            'port': node.get('port', 443),
+            'public_key': node['public_key'],
+            'short_id': node['short_id']
+        })
+        print(f"[INFO] {node['name']} 同步完成")
+
+# 生成订阅配置（包含所有节点）
+print("\n[INFO] 生成多节点订阅配置...")
+
+# 构建节点列表
+all_nodes = []
+
+# 主节点
+if main_node_info:
+    for node in nodes:
+        if node['type'] == 'local':
+            all_nodes.append({
+                'name': node['name'],
+                'server': main_node_info['ip'],
+                'port': 443,
+                'public_key': main_node_info['public_key'],
+                'short_id': main_node_info['short_id']
+            })
+            break
+
+# 远程节点
+for node in nodes:
+    if node['type'] == 'remote':
+        all_nodes.append({
+            'name': node['name'],
+            'server': node['server'],
+            'port': node.get('port', 443),
+            'public_key': node['public_key'],
+            'short_id': node['short_id']
+        })
+
+print(f"[INFO] 总节点数: {len(all_nodes)}")
+for n in all_nodes:
+    print(f"  - {n['name']}: {n['server']}")
+
+# 生成订阅服务配置并上传到主 VPS
+sub_config = {
+    'nodes': all_nodes,
+    'users': {u['name']: main_user_uuids.get(u['name'], '') for u in users if u['name'] in main_user_uuids},
+    'user_settings': {u['name']: {'traffic_limit_gb': u.get('traffic_limit_gb', 0), 'reset_day': u.get('reset_day', 1)} for u in users}
+}
+
+# 生成订阅服务器脚本
+sub_server_script = '''#!/usr/bin/env python3
 import http.server
 import ssl
 import json
 import os
+import mimetypes
 from datetime import datetime
-from urllib.parse import urlparse
+from urllib.parse import urlparse, unquote
 
 SUB_DIR = "/var/www/sub"
-ROUTES_FILE = os.path.join(SUB_DIR, "routes.json")
+DOWNLOAD_DIR = "/var/www/downloads"
+CONFIG_FILE = os.path.join(SUB_DIR, "multi_node_config.json")
 
 class SubHandler(http.server.BaseHTTPRequestHandler):
     def log_message(self, format, *args):
-        pass  # 静默日志
+        pass
 
     def do_HEAD(self):
         self._handle_request(head_only=True)
@@ -316,73 +401,109 @@ class SubHandler(http.server.BaseHTTPRequestHandler):
         self._handle_request(head_only=False)
 
     def _handle_request(self, head_only=False):
-        path = urlparse(self.path).path.strip('/')
+        path = unquote(urlparse(self.path).path).strip('/')
 
-        # 加载路由配置
-        try:
-            with open(ROUTES_FILE, 'r') as f:
-                routes = json.load(f)
-        except:
-            self.send_error(500, "Internal Server Error")
+        # 下载服务
+        if path.startswith('download'):
+            self._handle_download(path, head_only)
             return
 
-        if path not in routes:
+        # 加载配置
+        try:
+            with open(CONFIG_FILE, 'r') as f:
+                config = json.load(f)
+        except:
+            self.send_error(500, "Config not found")
+            return
+
+        nodes = config.get('nodes', [])
+        users = config.get('users', {})
+        user_settings = config.get('user_settings', {})
+
+        # 检查用户
+        if path not in users:
             self.send_error(404, "Not Found")
             return
 
-        route = routes[path]
-        yaml_path = route['yaml_path']
-        config_path = route['config_path']
+        uuid = users[path]
+        settings = user_settings.get(path, {})
 
-        # 读取 YAML 文件
-        try:
-            with open(yaml_path, 'r') as f:
-                yaml_content = f.read()
-        except:
-            self.send_error(404, "Not Found")
-            return
+        # 生成 Clash 配置
+        proxies = []
+        proxy_names = []
+        for node in nodes:
+            proxy = {
+                'name': node['name'],
+                'type': 'vless',
+                'server': node['server'],
+                'port': node['port'],
+                'uuid': uuid,
+                'network': 'tcp',
+                'tls': True,
+                'udp': True,
+                'flow': 'xtls-rprx-vision',
+                'servername': 'www.apple.com',
+                'reality-opts': {
+                    'public-key': node['public_key'],
+                    'short-id': node['short_id']
+                },
+                'client-fingerprint': 'chrome'
+            }
+            proxies.append(proxy)
+            proxy_names.append(node['name'])
 
-        # 读取用户配置获取流量限制
+        clash_config = {
+            'proxies': proxies,
+            'proxy-groups': [
+                {
+                    'name': 'Proxy',
+                    'type': 'select',
+                    'proxies': proxy_names + ['DIRECT']
+                },
+                {
+                    'name': 'Auto',
+                    'type': 'url-test',
+                    'proxies': proxy_names,
+                    'url': 'http://www.gstatic.com/generate_204',
+                    'interval': 300
+                }
+            ],
+            'rules': [
+                'GEOIP,CN,DIRECT',
+                'MATCH,Proxy'
+            ]
+        }
+
+        # 转换为 YAML
+        import yaml
+        yaml_content = f"# Clash Meta Configuration for {path}\\n"
+        yaml_content += f"# Nodes: {', '.join(proxy_names)}\\n\\n"
+        yaml_content += yaml.dump(clash_config, allow_unicode=True, default_flow_style=False, sort_keys=False)
+
+        # 计算流量信息
+        traffic_limit_gb = settings.get('traffic_limit_gb', 0)
+        total = traffic_limit_gb * 1024 * 1024 * 1024 if traffic_limit_gb > 0 else 0
         upload = 0
         download = 0
-        total = 0
         expire = 0
 
-        try:
-            with open(config_path, 'r') as f:
-                user_config = json.load(f)
-
-            traffic_limit_gb = user_config.get('traffic_limit_gb', 0)
-            if traffic_limit_gb > 0:
-                total = traffic_limit_gb * 1024 * 1024 * 1024  # 转换为字节
-
-            # 读取已使用流量（如果存在）
-            upload = user_config.get('upload_bytes', 0)
-            download = user_config.get('download_bytes', 0)
-
-            # 计算过期时间（下个重置日）
-            reset_day = user_config.get('reset_day', 1)
+        if traffic_limit_gb > 0:
+            reset_day = settings.get('reset_day', 1)
             now = datetime.now()
-            year = now.year
-            month = now.month
+            year, month = now.year, now.month
             if now.day >= reset_day:
                 month += 1
                 if month > 12:
                     month = 1
                     year += 1
             try:
-                expire_date = datetime(year, month, reset_day)
-                expire = int(expire_date.timestamp())
+                expire = int(datetime(year, month, reset_day).timestamp())
             except:
                 pass
-        except:
-            pass
 
-        # 发送响应
         self.send_response(200)
         self.send_header('Content-Type', 'text/yaml; charset=utf-8')
 
-        # 添加 subscription-userinfo 响应头（Shadowrocket 用这个显示流量信息）
         if total > 0:
             userinfo = f"upload={upload}; download={download}; total={total}"
             if expire > 0:
@@ -393,13 +514,57 @@ class SubHandler(http.server.BaseHTTPRequestHandler):
         if not head_only:
             self.wfile.write(yaml_content.encode('utf-8'))
 
+    def _handle_download(self, path, head_only):
+        if path == 'download' or path == 'download/':
+            index_path = os.path.join(DOWNLOAD_DIR, 'index.html')
+            if os.path.exists(index_path):
+                self.send_response(200)
+                self.send_header('Content-Type', 'text/html; charset=utf-8')
+                self.end_headers()
+                if not head_only:
+                    with open(index_path, 'rb') as f:
+                        self.wfile.write(f.read())
+            else:
+                self.send_error(404, "Not Found")
+            return
+
+        filename = path[len('download/'):]
+        filepath = os.path.join(DOWNLOAD_DIR, filename)
+
+        if '..' in filename or not os.path.abspath(filepath).startswith(DOWNLOAD_DIR):
+            self.send_error(403, "Forbidden")
+            return
+
+        if not os.path.isfile(filepath):
+            self.send_error(404, "Not Found")
+            return
+
+        file_size = os.path.getsize(filepath)
+        content_type, _ = mimetypes.guess_type(filepath)
+        if content_type is None:
+            content_type = 'application/octet-stream'
+
+        self.send_response(200)
+        self.send_header('Content-Type', content_type)
+        self.send_header('Content-Length', str(file_size))
+        self.send_header('Content-Disposition', f'attachment; filename="{filename}"')
+        self.end_headers()
+
+        if not head_only:
+            with open(filepath, 'rb') as f:
+                while True:
+                    chunk = f.read(65536)
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+
 def run_server(port, use_ssl=False):
     server = http.server.HTTPServer(('0.0.0.0', port), SubHandler)
     if use_ssl and os.path.exists('/etc/nginx/ssl/origin.crt'):
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         context.load_cert_chain('/etc/nginx/ssl/origin.crt', '/etc/nginx/ssl/origin.key')
         server.socket = context.wrap_socket(server.socket, server_side=True)
-    print(f"Subscription server running on port {port} (SSL: {use_ssl})")
+    print(f"Multi-node subscription server running on port {port} (SSL: {use_ssl})")
     server.serve_forever()
 
 if __name__ == '__main__':
@@ -409,322 +574,66 @@ if __name__ == '__main__':
     run_server(port, use_ssl)
 '''
 
-with open('/var/www/sub/sub_server.py', 'w') as f:
-    f.write(sub_service)
-os.chmod('/var/www/sub/sub_server.py', 0o755)
+# 保存配置和脚本到临时文件
+with open('/tmp/multi_node_config.json', 'w') as f:
+    json.dump(sub_config, f, indent=2)
 
-# 创建 systemd 服务
-systemd_service = f'''[Unit]
-Description=Subscription Server
-After=network.target
+with open('/tmp/sub_server_multi.py', 'w') as f:
+    f.write(sub_server_script)
 
-[Service]
-Type=simple
-ExecStart=/usr/bin/python3 /var/www/sub/sub_server.py {sub_port}
-Restart=always
-RestartSec=3
+# 上传到主 VPS 并重启订阅服务
+print("\n[INFO] 更新主 VPS 订阅服务...")
 
-[Install]
-WantedBy=multi-user.target
+upload_expect = f'''
+set timeout 60
+spawn scp -P {main_vps.get('ssh_port', 22)} -o StrictHostKeyChecking=no /tmp/multi_node_config.json /tmp/sub_server_multi.py {main_vps.get('user', 'root')}@{main_vps['ip']}:/var/www/sub/
+expect {{
+    "password:" {{ send "{main_vps['password']}\\r" }}
+    timeout {{ exit 1 }}
+}}
+expect eof
+
+spawn ssh -p {main_vps.get('ssh_port', 22)} -o StrictHostKeyChecking=no {main_vps.get('user', 'root')}@{main_vps['ip']}
+expect {{
+    "password:" {{ send "{main_vps['password']}\\r" }}
+    timeout {{ exit 1 }}
+}}
+expect "#"
+send "mv /var/www/sub/sub_server_multi.py /var/www/sub/sub_server.py && chmod 755 /var/www/sub/sub_server.py && systemctl restart sub-server && sleep 2 && systemctl is-active sub-server\\r"
+expect "#"
+send "exit\\r"
+expect eof
 '''
 
-with open('/etc/systemd/system/sub-server.service', 'w') as f:
-    f.write(systemd_service)
+result = subprocess.run(['expect', '-c', upload_expect], capture_output=True, text=True, timeout=90)
+if 'active' in result.stdout:
+    print("[INFO] 订阅服务已更新并重启")
+else:
+    print("[WARN] 订阅服务可能未正常启动")
 
-# 创建流量采集脚本
-traffic_collector = '''#!/usr/bin/env python3
-"""
-流量采集脚本 - 从 Xray API 获取用户流量并更新配置文件
-"""
-import json
-import socket
-import os
-from datetime import datetime
+# 生成订阅链接
+cf_domain = cloudflare.get('domain', '')
+cf_subdomain = cloudflare.get('subdomain', '')
 
-XRAY_API_HOST = "127.0.0.1"
-XRAY_API_PORT = 10085
-TRAFFIC_DIR = "/var/lib/xray/traffic"
+if cf_domain and cf_subdomain:
+    base_url = f"https://{cf_subdomain}.{cf_domain}:{sub_port}"
+else:
+    base_url = f"http://{main_vps['ip']}:{sub_port}"
 
-def query_stats(pattern, reset=False):
-    """通过 Xray API 查询流量统计"""
-    try:
-        import subprocess
-        cmd = ["/usr/local/bin/xray", "api", "stats", "-s", f"{XRAY_API_HOST}:{XRAY_API_PORT}"]
-        if pattern:
-            cmd.extend(["-pattern", pattern])
-        if reset:
-            cmd.append("-reset")
-
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
-        if result.returncode != 0:
-            return {}
-
-        # 解析输出
-        stats = {}
-        current_name = None
-        for line in result.stdout.strip().splitlines():
-            line = line.strip()
-            if line.startswith("stat:"):
-                continue
-            if line.startswith("name:"):
-                current_name = line.split(":", 1)[1].strip().strip('"')
-            elif line.startswith("value:") and current_name:
-                value = int(line.split(":", 1)[1].strip())
-                stats[current_name] = value
-                current_name = None
-        return stats
-    except Exception as e:
-        print(f"[ERROR] Query stats failed: {e}")
-        return {}
-
-def update_user_traffic():
-    """更新用户流量数据"""
-    if not os.path.exists(TRAFFIC_DIR):
-        return
-
-    # 获取所有用户流量统计
-    stats = query_stats("user>>>")
-
-    for filename in os.listdir(TRAFFIC_DIR):
-        if not filename.endswith('.json'):
-            continue
-
-        filepath = os.path.join(TRAFFIC_DIR, filename)
-        try:
-            with open(filepath, 'r') as f:
-                user_config = json.load(f)
-
-            email = user_config.get('email', '')
-            if not email:
-                continue
-
-            # 查找对应的流量数据
-            uplink_key = f"user>>>{email}>>>traffic>>>uplink"
-            downlink_key = f"user>>>{email}>>>traffic>>>downlink"
-
-            upload = stats.get(uplink_key, 0)
-            download = stats.get(downlink_key, 0)
-
-            # 累加流量（Xray stats 是累计值）
-            # 检查是否需要重置（每月重置日）
-            reset_day = user_config.get('reset_day', 1)
-            last_reset = user_config.get('last_reset_date', '')
-            today = datetime.now().strftime('%Y-%m-%d')
-            current_day = datetime.now().day
-            current_month = datetime.now().strftime('%Y-%m')
-            last_reset_month = last_reset[:7] if last_reset else ''
-
-            # 如果是新的月份且已过重置日，重置流量
-            if current_month != last_reset_month and current_day >= reset_day:
-                user_config['upload_bytes'] = upload
-                user_config['download_bytes'] = download
-                user_config['last_reset_date'] = today
-                print(f"[INFO] Reset traffic for {email}")
-            else:
-                # 更新流量数据
-                user_config['upload_bytes'] = upload
-                user_config['download_bytes'] = download
-
-            user_config['last_update'] = datetime.now().isoformat()
-
-            with open(filepath, 'w') as f:
-                json.dump(user_config, f, indent=2)
-
-            total_gb = (upload + download) / (1024**3)
-            print(f"[INFO] {email}: upload={upload}, download={download}, total={total_gb:.2f}GB")
-
-        except Exception as e:
-            print(f"[ERROR] Failed to update {filename}: {e}")
-
-if __name__ == '__main__':
-    print(f"[INFO] Traffic collector started at {datetime.now()}")
-    update_user_traffic()
-    print("[INFO] Done")
-'''
-
-with open('/var/lib/xray/traffic_collector.py', 'w') as f:
-    f.write(traffic_collector)
-os.chmod('/var/lib/xray/traffic_collector.py', 0o755)
-
-# 添加 cron 任务（每5分钟执行一次）
-import subprocess
-cron_job = "*/5 * * * * /usr/bin/python3 /var/lib/xray/traffic_collector.py >> /var/log/xray/traffic.log 2>&1"
-# 检查是否已存在
-result = subprocess.run(['crontab', '-l'], capture_output=True, text=True)
-existing_cron = result.stdout if result.returncode == 0 else ''
-if 'traffic_collector.py' not in existing_cron:
-    new_cron = existing_cron.rstrip() + chr(10) + cron_job + chr(10)
-    subprocess.run(['crontab', '-'], input=new_cron, text=True)
-    print("[INFO] Cron job added for traffic collection")
-
-# 生成合并的订阅链接文件
-with open('/root/subscriptions.txt', 'w') as f:
-    for r in results:
-        f.write(f"{r['name']}: {r['sub_url']}" + chr(10))
-
-print("")
+print("\n" + "=" * 60)
+print("订阅链接:")
 print("=" * 60)
-print("USER_LINKS_START")
-for r in results:
-    print(f"USER:{r['name']}")
-    print(f"SUB:{r['sub_url']}")
-    print("---")
-print("USER_LINKS_END")
+
+with open(f'{SCRIPT_DIR}/subscriptions.txt', 'w') as f:
+    for user in users:
+        name = user['name']
+        url = f"{base_url}/{name}"
+        print(f"{name}: {url}")
+        f.write(f"{name}: {url}\n")
+
 print("=" * 60)
+print(f"\n[INFO] 订阅链接已保存到 {SCRIPT_DIR}/subscriptions.txt")
+print("[INFO] 同步完成!")
 PYTHON_SCRIPT
 
-# 验证并重启服务
-echo "[INFO] Validating Xray config..."
-if $XRAY_BIN run -test -config $CONFIG_FILE > /dev/null 2>&1; then
-    echo "[INFO] Restarting Xray..."
-    systemctl restart xray
-    sleep 2
-    if [ "$(systemctl is-active xray)" = "active" ]; then
-        echo "[INFO] Xray OK"
-    else
-        echo "[ERROR] Xray failed"
-        exit 1
-    fi
-else
-    echo "[ERROR] Invalid config"
-    exit 1
-fi
-
-# 停止旧的 nginx 订阅配置（如果存在）
-rm -f /etc/nginx/sites-enabled/clash-sub /etc/nginx/sites-enabled/sub-proxy 2>/dev/null
-nginx -t && systemctl reload nginx 2>/dev/null || true
-
-# 启动 Python 订阅服务（监听 8443，带 SSL）
-echo "[INFO] Starting subscription server..."
-systemctl daemon-reload
-systemctl enable sub-server
-systemctl restart sub-server
-sleep 2
-
-if [ "$(systemctl is-active sub-server)" = "active" ]; then
-    echo "[INFO] Subscription server OK"
-else
-    echo "[ERROR] Subscription server failed"
-    systemctl status sub-server
-    exit 1
-fi
-
-echo "[INFO] Sync completed"
-REMOTE_SCRIPT
-
-log_info "上传配置到 VPS..."
-
-# 创建 expect 脚本
-cat > /tmp/sync_expect.exp << EXPEOF
-#!/usr/bin/expect
-set timeout 300
-
-# 上传脚本和配置
-spawn scp -P $VPS_SSH_PORT -o StrictHostKeyChecking=no /tmp/sync_users_remote.sh $USERS_FILE $VPS_USER@$VPS_IP:/tmp/
-expect {
-    "password:" { send "$VPS_PASSWORD\r" }
-    timeout { puts "SCP timed out"; exit 1 }
-}
-expect eof
-
-# 执行脚本
-spawn ssh -p $VPS_SSH_PORT -o StrictHostKeyChecking=no $VPS_USER@$VPS_IP
-expect {
-    "password:" { send "$VPS_PASSWORD\r" }
-    timeout { puts "SSH timed out"; exit 1 }
-}
-expect "#"
-send "chmod +x /tmp/sync_users_remote.sh && /tmp/sync_users_remote.sh /tmp/users.yaml '$SUB_PORT' '$NODE_NAME'\r"
-expect {
-    "USER_LINKS_END" { }
-    "ERROR" { puts "Sync failed"; exit 1 }
-    timeout { puts "Timeout"; exit 1 }
-}
-expect "#"
-send "rm -f /tmp/sync_users_remote.sh /tmp/users.yaml\r"
-expect "#"
-send "exit\r"
-expect eof
-EXPEOF
-
-expect /tmp/sync_expect.exp
-
-log_info "下载订阅链接..."
-
-# 下载合并的订阅链接文件
-expect << EOF
-set timeout 60
-spawn scp -P $VPS_SSH_PORT -o StrictHostKeyChecking=no $VPS_USER@$VPS_IP:/root/subscriptions.txt $SCRIPT_DIR/
-expect {
-    "password:" { send "$VPS_PASSWORD\r" }
-    timeout { puts "Download timed out"; exit 1 }
-}
-expect eof
-EOF
-
-# 如果配置了 Cloudflare，更新订阅链接为 HTTPS
-if [ -n "$CF_API_TOKEN" ] && [ -n "$CF_DOMAIN" ] && [ -n "$CF_SUBDOMAIN" ]; then
-    log_info "更新订阅链接为 HTTPS..."
-
-    # 尝试配置 Origin Rules（可选，需要额外权限）
-    ZONE_ID=$(curl -s -X GET "https://api.cloudflare.com/client/v4/zones?name=$CF_DOMAIN" \
-        -H "Authorization: Bearer $CF_API_TOKEN" \
-        -H "Content-Type: application/json" 2>/dev/null | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
-
-    ORIGIN_RULES_OK=false
-    if [ -n "$ZONE_ID" ]; then
-        # 尝试配置 Origin Rules
-        RESULT=$(curl -s -X PUT "https://api.cloudflare.com/client/v4/zones/$ZONE_ID/rulesets/phases/http_request_origin/entrypoint" \
-            -H "Authorization: Bearer $CF_API_TOKEN" \
-            -H "Content-Type: application/json" \
-            --data "{
-                \"rules\": [{
-                    \"expression\": \"(http.host eq \\\"$CF_SUBDOMAIN.$CF_DOMAIN\\\")\",
-                    \"description\": \"sub-port-rule\",
-                    \"action\": \"route\",
-                    \"action_parameters\": {
-                        \"origin\": {
-                            \"port\": $SUB_PORT
-                        }
-                    }
-                }]
-            }" 2>/dev/null)
-
-        if echo "$RESULT" | grep -q '"success":true'; then
-            log_info "Origin Rules 配置成功（443 -> $SUB_PORT）"
-            ORIGIN_RULES_OK=true
-        fi
-    fi
-
-    # 更新订阅链接文件
-    if [ -f "$SCRIPT_DIR/subscriptions.txt" ]; then
-        > "$SCRIPT_DIR/subscriptions.txt.tmp"
-        while IFS=': ' read -r username url; do
-            if [ "$ORIGIN_RULES_OK" = true ]; then
-                echo "$username: https://$CF_SUBDOMAIN.$CF_DOMAIN/$username" >> "$SCRIPT_DIR/subscriptions.txt.tmp"
-            else
-                echo "$username: https://$CF_SUBDOMAIN.$CF_DOMAIN:$SUB_PORT/$username" >> "$SCRIPT_DIR/subscriptions.txt.tmp"
-            fi
-        done < "$SCRIPT_DIR/subscriptions.txt"
-        mv "$SCRIPT_DIR/subscriptions.txt.tmp" "$SCRIPT_DIR/subscriptions.txt"
-    fi
-
-    if [ "$ORIGIN_RULES_OK" = false ]; then
-        log_warn "Origin Rules 配置失败（需要额外 API 权限），使用带端口的链接"
-    fi
-fi
-
-# 输出结果
-echo ""
-log_info "=========================================="
-log_info "用户同步完成！"
-log_info "=========================================="
-echo ""
-
-if [ -f "$SCRIPT_DIR/subscriptions.txt" ]; then
-    cat "$SCRIPT_DIR/subscriptions.txt"
-    echo ""
-fi
-
-log_info "订阅链接保存在: $SCRIPT_DIR/subscriptions.txt"
-log_info "=========================================="
+export SCRIPT_DIR="$SCRIPT_DIR"

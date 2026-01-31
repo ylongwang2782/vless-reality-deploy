@@ -1,5 +1,5 @@
 # 敏感配置文件（包含密码和 API Token）
-config.env
+config.yaml
 
 # 用户配置文件（包含用户列表）
 users.yaml
@@ -19,8 +19,9 @@ vless_qr.png
 # Claude Code
 .claude/
 
-# 生成的下载链接
+# 生成的下载链接和公告
 download_links.txt
+announce.md
 
 # 临时文件
 *.tmp
