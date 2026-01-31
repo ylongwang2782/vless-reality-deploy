@@ -45,56 +45,22 @@ log_info "=========================================="
 log_info "同步用户到所有节点"
 log_info "=========================================="
 
-# 使用 Python 执行同步
-python3 << 'PYTHON_SCRIPT'
+# 生成远程同步脚本
+cat > /tmp/sync_node_remote.sh << 'REMOTE_SCRIPT'
+#!/bin/bash
+# 远程同步脚本
+
+USERS_FILE="/tmp/users_to_sync.yaml"
+
+python3 << 'PYEOF'
 import yaml
 import json
 import subprocess
-import os
-import sys
 
-SCRIPT_DIR = os.getcwd()
-
-# 读取配置
-with open(f'{SCRIPT_DIR}/config.yaml', 'r') as f:
-    config = yaml.safe_load(f)
-
-with open(f'{SCRIPT_DIR}/users.yaml', 'r') as f:
+with open('/tmp/users_to_sync.yaml', 'r') as f:
     users_config = yaml.safe_load(f)
 
-nodes = config.get('nodes', [])
-cloudflare = config.get('cloudflare', {})
-sub_port = config.get('sub_port', 8443)
 users = users_config.get('users', [])
-
-# 检查节点是否已部署
-deployed_nodes = [n for n in nodes if n.get('public_key')]
-if not deployed_nodes:
-    print("[ERROR] 没有已部署的节点")
-    print("请先运行 ./deploy.sh 部署主节点")
-    sys.exit(1)
-
-main_node = nodes[0]
-if not main_node.get('public_key'):
-    print("[ERROR] 主节点未部署")
-    print("请先运行 ./deploy.sh")
-    sys.exit(1)
-
-print(f"[INFO] 已部署节点: {len(deployed_nodes)}")
-print(f"[INFO] 用户数量: {len(users)}")
-
-# 生成同步用户脚本
-sync_script = '''#!/bin/bash
-USERS_JSON="$1"
-
-XRAY_BIN="/usr/local/bin/xray"
-CONFIG_FILE="/usr/local/etc/xray/config.json"
-
-python3 << PYEOF
-import json
-import subprocess
-
-users = json.loads('$USERS_JSON'.replace("'", '"'))
 
 with open('/usr/local/etc/xray/config.json', 'r') as f:
     xray_config = json.load(f)
@@ -129,19 +95,55 @@ for user in users:
 with open('/usr/local/etc/xray/config.json', 'w') as f:
     json.dump(xray_config, f, indent=4)
 
-# 输出 UUID
-print("USER_UUIDS:" + json.dumps(user_uuids))
+print("USER_UUIDS_JSON:" + json.dumps(user_uuids))
 PYEOF
 
 # 重启 Xray
 systemctl restart xray
 sleep 2
-[ "$(systemctl is-active xray)" = "active" ] && echo "SYNC_OK" || echo "SYNC_FAILED"
-'''
+[ "$(systemctl is-active xray)" = "active" ] && echo "SYNC_NODE_OK" || echo "SYNC_NODE_FAILED"
+REMOTE_SCRIPT
+
+# 使用 Python 执行同步
+python3 << PYTHON_SCRIPT
+import yaml
+import json
+import subprocess
+import os
+import sys
+
+SCRIPT_DIR = "$SCRIPT_DIR"
+
+# 读取配置
+with open(f'{SCRIPT_DIR}/config.yaml', 'r') as f:
+    config = yaml.safe_load(f)
+
+with open(f'{SCRIPT_DIR}/users.yaml', 'r') as f:
+    users_config = yaml.safe_load(f)
+
+nodes = config.get('nodes', [])
+cloudflare = config.get('cloudflare', {})
+sub_port = config.get('sub_port', 8443)
+users = users_config.get('users', [])
+
+# 检查节点是否已部署
+deployed_nodes = [n for n in nodes if n.get('public_key')]
+if not deployed_nodes:
+    print("[ERROR] 没有已部署的节点")
+    print("请先运行 ./deploy.sh 部署主节点")
+    sys.exit(1)
+
+main_node = nodes[0]
+if not main_node.get('public_key'):
+    print("[ERROR] 主节点未部署")
+    print("请先运行 ./deploy.sh")
+    sys.exit(1)
+
+print(f"[INFO] 已部署节点: {len(deployed_nodes)}")
+print(f"[INFO] 用户数量: {len(users)}")
 
 # 同步每个节点
 user_uuids = {}
-users_json = json.dumps([{'name': u['name']} for u in users])
 
 for node in deployed_nodes:
     if 'ssh' not in node:
@@ -151,42 +153,39 @@ for node in deployed_nodes:
     ssh = node['ssh']
     server = node['server']
     name = node['name']
-
-    print(f"\n[STEP] 同步节点: {name} ({server})...")
-
-    # 保存同步脚本
-    script_content = sync_script.replace("$USERS_JSON", users_json)
-    with open('/tmp/sync_node.sh', 'w') as f:
-        f.write(script_content)
-
     ssh_port = ssh.get('port', 22)
     ssh_user = ssh.get('user', 'root')
     ssh_pass = ssh['password']
 
+    print(f"\n[STEP] 同步节点: {name} ({server})...")
+
+    # 生成 expect 脚本
     expect_script = f'''
 set timeout 120
 
-spawn scp -P {ssh_port} -o StrictHostKeyChecking=no /tmp/sync_node.sh {ssh_user}@{server}:/tmp/
+# 上传脚本和用户配置
+spawn scp -P {ssh_port} -o StrictHostKeyChecking=no /tmp/sync_node_remote.sh {SCRIPT_DIR}/users.yaml {ssh_user}@{server}:/tmp/
 expect {{
     "password:" {{ send "{ssh_pass}\\r" }}
-    timeout {{ exit 1 }}
+    timeout {{ puts "SCP timeout"; exit 1 }}
 }}
 expect eof
 
+# 重命名用户文件
 spawn ssh -p {ssh_port} -o StrictHostKeyChecking=no {ssh_user}@{server}
 expect {{
     "password:" {{ send "{ssh_pass}\\r" }}
-    timeout {{ exit 1 }}
+    timeout {{ puts "SSH timeout"; exit 1 }}
 }}
 expect "#"
-send "chmod +x /tmp/sync_node.sh && /tmp/sync_node.sh '{users_json}'\\r"
+send "mv /tmp/users.yaml /tmp/users_to_sync.yaml && chmod +x /tmp/sync_node_remote.sh && /tmp/sync_node_remote.sh\\r"
 expect {{
-    "SYNC_OK" {{ }}
-    "SYNC_FAILED" {{ puts "Sync failed"; exit 1 }}
-    timeout {{ puts "Timeout"; exit 1 }}
+    "SYNC_NODE_OK" {{ }}
+    "SYNC_NODE_FAILED" {{ puts "Sync failed" }}
+    timeout {{ puts "Script timeout" }}
 }}
 expect "#"
-send "rm -f /tmp/sync_node.sh\\r"
+send "rm -f /tmp/sync_node_remote.sh /tmp/users_to_sync.yaml\\r"
 expect "#"
 send "exit\\r"
 expect eof
@@ -195,27 +194,63 @@ expect eof
     result = subprocess.run(['expect', '-c', expect_script], capture_output=True, text=True, timeout=150)
 
     # 提取 UUID
-    for line in result.stdout.split('\n'):
-        if 'USER_UUIDS:' in line:
+    for line in result.stdout.split('\\n'):
+        if 'USER_UUIDS_JSON:' in line:
             try:
-                uuids = json.loads(line.split('USER_UUIDS:')[1])
+                json_str = line.split('USER_UUIDS_JSON:')[1].strip()
+                uuids = json.loads(json_str)
                 user_uuids.update(uuids)
-            except:
-                pass
+            except Exception as e:
+                print(f"[DEBUG] Parse error: {e}")
 
-    if 'SYNC_OK' in result.stdout:
+    if 'SYNC_NODE_OK' in result.stdout:
         print(f"[INFO] {name} 同步完成")
     else:
         print(f"[WARN] {name} 同步可能失败")
+        # 调试输出
+        if 'Created:' in result.stdout:
+            for line in result.stdout.split('\\n'):
+                if 'Created:' in line:
+                    print(f"  {line.strip()}")
 
 if not user_uuids:
     print("[ERROR] 无法获取用户 UUID")
+    print("[DEBUG] 尝试从主节点直接获取...")
+
+    # 直接从主节点获取
+    ssh = main_node['ssh']
+    expect_script = f'''
+set timeout 30
+spawn ssh -p {ssh.get('port', 22)} -o StrictHostKeyChecking=no {ssh.get('user', 'root')}@{main_node['server']}
+expect {{
+    "password:" {{ send "{ssh['password']}\\r" }}
+    timeout {{ exit 1 }}
+}}
+expect "#"
+send "python3 -c \\"import json; c=json.load(open('/usr/local/etc/xray/config.json')); clients=[i for i in c['inbounds'] if i.get('protocol')=='vless'][0]['settings']['clients']; print('UUIDS:'+json.dumps({{cl['email'].replace('@vps',''):cl['id'] for cl in clients if '@vps' in cl['email']}}))\\"\r"
+expect "#"
+send "exit\\r"
+expect eof
+'''
+    result = subprocess.run(['expect', '-c', expect_script], capture_output=True, text=True, timeout=60)
+
+    for line in result.stdout.split('\\n'):
+        if 'UUIDS:' in line:
+            try:
+                json_str = line.split('UUIDS:')[1].strip()
+                user_uuids = json.loads(json_str)
+                print(f"[INFO] 从主节点获取到 {len(user_uuids)} 个用户")
+            except:
+                pass
+
+if not user_uuids:
+    print("[ERROR] 仍然无法获取用户 UUID，请检查节点状态")
     sys.exit(1)
 
-print(f"\n[INFO] 获取到 {len(user_uuids)} 个用户")
+print(f"\\n[INFO] 获取到 {len(user_uuids)} 个用户")
 
 # 生成订阅服务配置
-print("\n[STEP] 更新订阅服务...")
+print("\\n[STEP] 更新订阅服务...")
 
 sub_config = {
     'nodes': [{
@@ -288,7 +323,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             'rules': ['GEOIP,CN,DIRECT', 'MATCH,Proxy']
         }
 
-        content = f"# Clash Meta - {path}\\n# Nodes: {', '.join(names)}\\n\\n"
+        NL = chr(10)
+        content = "# Clash Meta - " + path + NL + "# Nodes: " + ", ".join(names) + NL + NL
         content += yaml.dump(clash, allow_unicode=True, default_flow_style=False, sort_keys=False)
 
         self.send_response(200)
@@ -305,7 +341,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 if m > 12: m, y = 1, y + 1
             try:
                 exp = int(datetime(y, m, reset).timestamp())
-                self.send_header('subscription-userinfo', f'upload=0; download=0; total={int(total)}; expire={exp}')
+                self.send_header('subscription-userinfo', 'upload=0; download=0; total=' + str(int(total)) + '; expire=' + str(exp))
             except: pass
 
         self.end_headers()
@@ -333,10 +369,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
         ct, _ = mimetypes.guess_type(fp)
         self.send_header('Content-Type', ct or 'application/octet-stream')
         self.send_header('Content-Length', os.path.getsize(fp))
-        self.send_header('Content-Disposition', f'attachment; filename="{fn}"')
+        self.send_header('Content-Disposition', 'attachment; filename="' + fn + '"')
         self.end_headers()
         with open(fp, 'rb') as f:
-            while c := f.read(65536):
+            while True:
+                c = f.read(65536)
+                if not c:
+                    break
                 self.wfile.write(c)
 
 if __name__ == '__main__':
@@ -347,7 +386,7 @@ if __name__ == '__main__':
         ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         ctx.load_cert_chain('/etc/nginx/ssl/origin.crt', '/etc/nginx/ssl/origin.key')
         srv.socket = ctx.wrap_socket(srv.socket, server_side=True)
-    print(f"Subscription server on port {port}")
+    print('Subscription server on port ' + str(port))
     srv.serve_forever()
 '''
 
@@ -357,13 +396,6 @@ with open('/tmp/sub_config.json', 'w') as f:
 
 with open('/tmp/sub_server.py', 'w') as f:
     f.write(sub_server)
-
-# 上传到主节点
-ssh = main_node['ssh']
-server = main_node['server']
-ssh_port = ssh.get('port', 22)
-ssh_user = ssh.get('user', 'root')
-ssh_pass = ssh['password']
 
 # systemd 服务
 systemd_svc = f'''[Unit]
@@ -382,6 +414,13 @@ WantedBy=multi-user.target
 
 with open('/tmp/sub-server.service', 'w') as f:
     f.write(systemd_svc)
+
+# 上传到主节点
+ssh = main_node['ssh']
+server = main_node['server']
+ssh_port = ssh.get('port', 22)
+ssh_user = ssh.get('user', 'root')
+ssh_pass = ssh['password']
 
 expect_script = f'''
 set timeout 60
@@ -421,7 +460,7 @@ if cf_domain and cf_subdomain:
 else:
     base_url = f"http://{main_node['server']}:{sub_port}"
 
-print("\n" + "=" * 60)
+print("\\n" + "=" * 60)
 print("订阅链接:")
 print("=" * 60)
 
@@ -430,12 +469,12 @@ with open(f'{SCRIPT_DIR}/subscriptions.txt', 'w') as f:
         name = user['name']
         url = f"{base_url}/{name}"
         print(f"{name}: {url}")
-        f.write(f"{name}: {url}\n")
+        f.write(f"{name}: {url}\\n")
 
 print("=" * 60)
-print(f"\n[INFO] 已保存到 {SCRIPT_DIR}/subscriptions.txt")
-print("\n包含节点:")
+print(f"\\n[INFO] 已保存到 {SCRIPT_DIR}/subscriptions.txt")
+print("\\n包含节点:")
 for n in deployed_nodes:
     print(f"  - {n['name']} ({n['server']})")
-print("\n[INFO] 同步完成!")
+print("\\n[INFO] 同步完成!")
 PYTHON_SCRIPT
