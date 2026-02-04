@@ -85,114 +85,281 @@ cat > "$DOWNLOAD_DIR/index.html" << 'HTML_EOF'
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>客户端下载</title>
+    <title>订阅与客户端下载</title>
     <style>
+        @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;700&family=Noto+Sans+SC:wght@400;600&display=swap');
+        :root {
+            --bg-1: #0b1221;
+            --bg-2: #0f1b35;
+            --card: #ffffff;
+            --text: #0b1221;
+            --muted: #5f6b7a;
+            --accent: #ffb200;
+            --accent-2: #3b82f6;
+            --border: #e6e8ee;
+        }
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            font-family: 'Plus Jakarta Sans', 'Noto Sans SC', sans-serif;
+            background:
+                radial-gradient(900px 500px at 10% -10%, #3b82f6 0%, transparent 60%),
+                radial-gradient(800px 450px at 100% 0%, #ffb200 0%, transparent 55%),
+                linear-gradient(180deg, var(--bg-1), var(--bg-2));
             min-height: 100vh;
-            display: flex;
-            justify-content: center;
-            align-items: center;
+            color: var(--text);
+            padding: 28px;
+        }
+        .wrap {
+            max-width: 1100px;
+            margin: 0 auto;
+        }
+        .header {
+            color: #fff;
+            margin-bottom: 18px;
+        }
+        .title {
+            font-size: 28px;
+            letter-spacing: 0.2px;
+            font-weight: 700;
+        }
+        .subtitle {
+            margin-top: 6px;
+            opacity: 0.85;
+            font-size: 14px;
+        }
+        .notice {
+            margin: 16px 0 22px;
+            background: rgba(255, 178, 0, 0.18);
+            border: 1px solid rgba(255, 178, 0, 0.5);
+            color: #fff4cc;
+            padding: 12px 16px;
+            border-radius: 12px;
+            font-size: 14px;
+            line-height: 1.5;
+            backdrop-filter: blur(4px);
+            white-space: pre-wrap;
+        }
+        .grid {
+            display: grid;
+            grid-template-columns: 1.35fr 0.9fr;
+            gap: 20px;
+        }
+        .card {
+            background: var(--card);
+            border-radius: 16px;
             padding: 20px;
+            box-shadow: 0 14px 35px rgba(11, 18, 33, 0.15);
+            border: 1px solid var(--border);
+            animation: rise 0.5s ease both;
         }
-        .container {
-            background: white;
-            border-radius: 20px;
-            padding: 40px;
-            max-width: 500px;
-            width: 100%;
-            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+        .card h2 {
+            font-size: 18px;
+            margin-bottom: 14px;
         }
-        h1 {
-            text-align: center;
-            color: #333;
-            margin-bottom: 30px;
-            font-size: 24px;
+        .subs {
+            display: grid;
+            gap: 12px;
+        }
+        .sub-item {
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 12px 14px;
+            display: grid;
+            grid-template-columns: 1fr auto;
+            gap: 8px;
+            align-items: center;
+            background: #fafbff;
+        }
+        .sub-name {
+            font-weight: 600;
+            color: #1f2a44;
+        }
+        .sub-link {
+            font-size: 12px;
+            color: var(--muted);
+            word-break: break-all;
+            margin-top: 4px;
+        }
+        .btn {
+            background: var(--accent-2);
+            color: #fff;
+            border: none;
+            padding: 8px 12px;
+            border-radius: 10px;
+            cursor: pointer;
+            font-size: 12px;
+            transition: transform 0.15s ease, opacity 0.15s ease;
+        }
+        .btn:hover { transform: translateY(-1px); opacity: 0.9; }
+        .downloads {
+            display: grid;
+            gap: 12px;
         }
         .download-item {
-            display: flex;
-            align-items: center;
-            padding: 20px;
-            background: #f8f9fa;
+            border: 1px solid var(--border);
             border-radius: 12px;
-            margin-bottom: 15px;
-            transition: transform 0.2s, box-shadow 0.2s;
+            padding: 14px;
+            background: #f8fafc;
+            display: grid;
+            gap: 6px;
         }
-        .download-item:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 5px 20px rgba(0,0,0,0.1);
+        .download-title {
+            font-weight: 600;
         }
-        .icon {
-            font-size: 40px;
-            margin-right: 20px;
+        .download-meta {
+            font-size: 12px;
+            color: var(--muted);
         }
-        .info { flex: 1; }
-        .info h3 {
-            color: #333;
-            margin-bottom: 5px;
-            font-size: 18px;
-        }
-        .info p {
-            color: #666;
-            font-size: 14px;
-        }
-        .download-btn {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            border: none;
-            padding: 12px 24px;
-            border-radius: 8px;
-            cursor: pointer;
-            font-size: 14px;
+        .download-link {
+            display: inline-block;
+            margin-top: 6px;
+            color: #fff;
+            background: linear-gradient(135deg, #3b82f6, #06b6d4);
+            padding: 8px 12px;
+            border-radius: 10px;
             text-decoration: none;
-            transition: opacity 0.2s;
+            font-size: 12px;
+            width: fit-content;
         }
-        .download-btn:hover { opacity: 0.9; }
-        .note {
-            margin-top: 25px;
-            padding: 15px;
-            background: #fff3cd;
-            border-radius: 8px;
+        .empty {
             font-size: 13px;
-            color: #856404;
+            color: var(--muted);
+            background: #f1f5f9;
+            padding: 12px;
+            border-radius: 10px;
+            border: 1px dashed var(--border);
+        }
+        .tips {
+            margin-top: 16px;
+            font-size: 13px;
+            color: var(--muted);
+            line-height: 1.6;
+        }
+        @keyframes rise {
+            from { transform: translateY(8px); opacity: 0; }
+            to { transform: translateY(0); opacity: 1; }
+        }
+        @media (max-width: 900px) {
+            .grid { grid-template-columns: 1fr; }
         }
     </style>
 </head>
 <body>
-    <div class="container">
-        <h1>代理客户端下载</h1>
-
-        <div class="download-item">
-            <div class="icon">🖥️</div>
-            <div class="info">
-                <h3>Clash Verge</h3>
-                <p>Windows 客户端 (v2.4.5)</p>
-            </div>
-            <a href="Clash.Verge_2.4.5_x64-setup.exe" class="download-btn">下载</a>
+    <div class="wrap">
+        <div class="header">
+            <div class="title">订阅与客户端下载</div>
+            <div class="subtitle">请复制自己的订阅链接，导入客户端后连接使用</div>
         </div>
 
-        <div class="download-item">
-            <div class="icon">📱</div>
-            <div class="info">
-                <h3>Clash Meta</h3>
-                <p>Android 客户端 (v2.11.22)</p>
-            </div>
-            <a href="cmfa-2.11.22-meta-universal-release.apk" class="download-btn">下载</a>
-        </div>
+        <div class="notice" id="notice">更新公告：加载中…</div>
 
-        <div class="note">
-            <strong>使用说明：</strong><br>
-            1. 下载并安装对应平台的客户端<br>
-            2. 复制你的订阅链接<br>
-            3. 在客户端中导入订阅<br>
-            4. 选择节点并连接
+        <div class="grid">
+            <div class="card">
+                <h2>订阅链接</h2>
+                <div class="subs" id="subs"></div>
+                <div class="empty" id="subs-empty" style="display:none;">暂未生成订阅链接，请联系管理员</div>
+            </div>
+            <div class="card">
+                <h2>客户端下载</h2>
+                <div class="downloads">
+                    <div class="download-item">
+                        <div class="download-title">Clash Verge Rev</div>
+                        <div class="download-meta">Windows 客户端 (v2.4.5)</div>
+                        <a class="download-link" href="Clash.Verge_2.4.5_x64-setup.exe">下载</a>
+                    </div>
+                    <div class="download-item">
+                        <div class="download-title">Clash Meta for Android</div>
+                        <div class="download-meta">Android 客户端 (v2.11.22)</div>
+                        <a class="download-link" href="cmfa-2.11.22-meta-universal-release.apk">下载</a>
+                    </div>
+                </div>
+                <div class="tips">
+                    使用步骤：<br>
+                    1. 下载并安装客户端<br>
+                    2. 复制你的订阅链接<br>
+                    3. 在客户端中导入订阅并连接
+                </div>
+            </div>
         </div>
     </div>
+
+    <script>
+        function createSubItem(name, url) {
+            const wrapper = document.createElement('div');
+            wrapper.className = 'sub-item';
+            const left = document.createElement('div');
+            const title = document.createElement('div');
+            title.className = 'sub-name';
+            title.textContent = name;
+            const link = document.createElement('div');
+            link.className = 'sub-link';
+            link.textContent = url;
+            left.appendChild(title);
+            left.appendChild(link);
+            const btn = document.createElement('button');
+            btn.className = 'btn';
+            btn.textContent = '复制';
+            btn.addEventListener('click', async () => {
+                try {
+                    await navigator.clipboard.writeText(url);
+                    btn.textContent = '已复制';
+                    setTimeout(() => btn.textContent = '复制', 1200);
+                } catch (e) {
+                    window.prompt('复制订阅链接：', url);
+                }
+            });
+            wrapper.appendChild(left);
+            wrapper.appendChild(btn);
+            return wrapper;
+        }
+
+        async function loadNotice() {
+            const el = document.getElementById('notice');
+            try {
+                const res = await fetch('/download/notice.txt', { cache: 'no-store' });
+                if (!res.ok) throw new Error('no notice');
+                const text = (await res.text()).trim();
+                el.textContent = text || '更新公告：暂无更新';
+            } catch (e) {
+                el.textContent = '更新公告：暂无更新';
+            }
+        }
+
+        async function loadSubs() {
+            const list = document.getElementById('subs');
+            const empty = document.getElementById('subs-empty');
+            try {
+                const res = await fetch('/download/links.json', { cache: 'no-store' });
+                if (!res.ok) throw new Error('no links');
+                const data = await res.json();
+                if (!data.links || data.links.length === 0) {
+                    empty.style.display = 'block';
+                    return;
+                }
+                data.links.forEach(item => {
+                    list.appendChild(createSubItem(item.name || item.token, item.url));
+                });
+            } catch (e) {
+                empty.style.display = 'block';
+            }
+        }
+
+        loadNotice();
+        loadSubs();
+    </script>
 </body>
 </html>
 HTML_EOF
+
+# 更新公告（可编辑）
+cat > "$DOWNLOAD_DIR/notice.txt" << 'NOTICE_EOF'
+【更新内容】
+✅ 支持所有代理软件（包含 clash）
+✅ 协议升级为 VLESS + Reality，更安全、更稳定
+✅ 订阅链接启用 HTTPS 加密
+✅ 通过 Cloudflare CDN 隐藏服务器 IP
+✅ 开启 BBR 加速
+NOTICE_EOF
 
 echo "[INFO] 文件下载完成"
 ls -lh "$DOWNLOAD_DIR"
@@ -234,6 +401,7 @@ from urllib.parse import urlparse, unquote
 SUB_DIR = "/var/www/sub"
 DOWNLOAD_DIR = "/var/www/downloads"
 ROUTES_FILE = os.path.join(SUB_DIR, "routes.json")
+USE_SSL = False
 
 class SubHandler(http.server.BaseHTTPRequestHandler):
     def log_message(self, format, *args):
@@ -268,7 +436,7 @@ class SubHandler(http.server.BaseHTTPRequestHandler):
         route = routes[path]
 
         # 跳过特殊路由
-        if route.get('type') == 'downloads':
+        if isinstance(route, dict) and route.get('type') == 'downloads':
             self.send_error(404, "Not Found")
             return
 
@@ -332,6 +500,42 @@ class SubHandler(http.server.BaseHTTPRequestHandler):
             self.wfile.write(yaml_content.encode('utf-8'))
 
     def _handle_download(self, path, head_only):
+        # 订阅链接列表
+        if path == 'download/links' or path == 'download/links.json':
+            links = []
+            try:
+                with open(ROUTES_FILE, 'r') as f:
+                    routes = json.load(f)
+                for token, route in routes.items():
+                    if isinstance(route, dict) and route.get('type') == 'downloads':
+                        continue
+                    name = route.get('name') if isinstance(route, dict) else token
+                    host = self.headers.get('Host', '')
+                    scheme = 'https' if USE_SSL else 'http'
+                    base = f"{scheme}://{host}" if host else ''
+                    url = f"{base}/{token}" if base else f"/{token}"
+                    links.append({
+                        "name": name or token,
+                        "token": token,
+                        "url": url
+                    })
+                links.sort(key=lambda x: x.get("name", ""))
+            except:
+                pass
+
+            body = json.dumps({
+                "count": len(links),
+                "links": links,
+                "updated_at": datetime.utcnow().isoformat() + "Z"
+            }, ensure_ascii=False)
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json; charset=utf-8')
+            self.send_header('Cache-Control', 'no-store')
+            self.end_headers()
+            if not head_only:
+                self.wfile.write(body.encode('utf-8'))
+            return
+
         # 移除 'download' 或 'download/' 前缀
         if path == 'download' or path == 'download/':
             # 返回下载页面
@@ -382,6 +586,8 @@ class SubHandler(http.server.BaseHTTPRequestHandler):
                     self.wfile.write(chunk)
 
 def run_server(port, use_ssl=False):
+    global USE_SSL
+    USE_SSL = use_ssl
     server = http.server.HTTPServer(('0.0.0.0', port), SubHandler)
     if use_ssl and os.path.exists('/etc/nginx/ssl/origin.crt'):
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)

@@ -444,11 +444,14 @@ import http.server
 import ssl
 import json
 import os
+import mimetypes
 from datetime import datetime
-from urllib.parse import urlparse
+from urllib.parse import urlparse, unquote
 
 SUB_DIR = "/var/www/sub"
+DOWNLOAD_DIR = "/var/www/downloads"
 ROUTES_FILE = os.path.join(SUB_DIR, "routes.json")
+USE_SSL = False
 
 class SubHandler(http.server.BaseHTTPRequestHandler):
     def log_message(self, format, *args):
@@ -461,7 +464,11 @@ class SubHandler(http.server.BaseHTTPRequestHandler):
         self._handle_request(head_only=False)
 
     def _handle_request(self, head_only=False):
-        path = urlparse(self.path).path.strip('/')
+        path = unquote(urlparse(self.path).path).strip('/')
+
+        if path.startswith('download'):
+            self._handle_download(path, head_only)
+            return
 
         # 加载路由配置
         try:
@@ -476,6 +483,10 @@ class SubHandler(http.server.BaseHTTPRequestHandler):
             return
 
         route = routes[path]
+
+        if isinstance(route, dict) and route.get('type') == 'downloads':
+            self.send_error(404, "Not Found")
+            return
         yaml_path = route['yaml_path']
         config_path = route['config_path']
 
@@ -538,7 +549,88 @@ class SubHandler(http.server.BaseHTTPRequestHandler):
         if not head_only:
             self.wfile.write(yaml_content.encode('utf-8'))
 
+    def _handle_download(self, path, head_only):
+        if path == 'download/links' or path == 'download/links.json':
+            links = []
+            try:
+                with open(ROUTES_FILE, 'r') as f:
+                    routes = json.load(f)
+                for token, route in routes.items():
+                    if isinstance(route, dict) and route.get('type') == 'downloads':
+                        continue
+                    name = route.get('name') if isinstance(route, dict) else token
+                    host = self.headers.get('Host', '')
+                    scheme = 'https' if USE_SSL else 'http'
+                    base = f"{scheme}://{host}" if host else ''
+                    url = f"{base}/{token}" if base else f"/{token}"
+                    links.append({
+                        "name": name or token,
+                        "token": token,
+                        "url": url
+                    })
+                links.sort(key=lambda x: x.get("name", ""))
+            except:
+                pass
+
+            body = json.dumps({
+                "count": len(links),
+                "links": links,
+                "updated_at": datetime.utcnow().isoformat() + "Z"
+            }, ensure_ascii=False)
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json; charset=utf-8')
+            self.send_header('Cache-Control', 'no-store')
+            self.end_headers()
+            if not head_only:
+                self.wfile.write(body.encode('utf-8'))
+            return
+
+        if path == 'download' or path == 'download/':
+            index_path = os.path.join(DOWNLOAD_DIR, 'index.html')
+            if os.path.exists(index_path):
+                self.send_response(200)
+                self.send_header('Content-Type', 'text/html; charset=utf-8')
+                self.end_headers()
+                if not head_only:
+                    with open(index_path, 'rb') as f:
+                        self.wfile.write(f.read())
+            else:
+                self.send_error(404, "Not Found")
+            return
+
+        filename = path[len('download/'):]
+        filepath = os.path.join(DOWNLOAD_DIR, filename)
+
+        if '..' in filename or not os.path.abspath(filepath).startswith(DOWNLOAD_DIR):
+            self.send_error(403, "Forbidden")
+            return
+
+        if not os.path.isfile(filepath):
+            self.send_error(404, "Not Found")
+            return
+
+        file_size = os.path.getsize(filepath)
+        content_type, _ = mimetypes.guess_type(filepath)
+        if content_type is None:
+            content_type = 'application/octet-stream'
+
+        self.send_response(200)
+        self.send_header('Content-Type', content_type)
+        self.send_header('Content-Length', str(file_size))
+        self.send_header('Content-Disposition', f'attachment; filename="{filename}"')
+        self.end_headers()
+
+        if not head_only:
+            with open(filepath, 'rb') as f:
+                while True:
+                    chunk = f.read(65536)
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+
 def run_server(port, use_ssl=False):
+    global USE_SSL
+    USE_SSL = use_ssl
     server = http.server.HTTPServer(('0.0.0.0', port), SubHandler)
     if use_ssl and os.path.exists('/etc/nginx/ssl/origin.crt'):
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
