@@ -7,7 +7,7 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-CONFIG_FILE="$SCRIPT_DIR/config.env"
+CONFIG_FILE="$SCRIPT_DIR/config.yaml"
 
 # 颜色输出
 RED='\033[0;31m'
@@ -19,30 +19,39 @@ log_info() { echo -e "${GREEN}[INFO]${NC} $1"; }
 log_warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 
-# 检查配置文件
-if [ ! -f "$CONFIG_FILE" ]; then
-    log_error "配置文件不存在: $CONFIG_FILE"
-    exit 1
-fi
+# 解析参数
+NODE_ID=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -n|--node)
+            NODE_ID="$2"
+            shift 2
+            ;;
+        -h|--help)
+            echo "用法: $0 [--node <node_id>]"
+            exit 0
+            ;;
+        *)
+            log_error "未知参数: $1"
+            echo "用法: $0 [--node <node_id>]"
+            exit 1
+            ;;
+    esac
+done
 
 # 加载配置
-source "$CONFIG_FILE"
-
-# 默认 SSH 端口
-if [ -z "$VPS_SSH_PORT" ]; then
-    VPS_SSH_PORT="22"
-fi
-
-# 验证必要配置
-if [ -z "$VPS_IP" ] || [ -z "$VPS_PASSWORD" ]; then
-    log_error "VPS_IP 和 VPS_PASSWORD 必须配置"
+source "$SCRIPT_DIR/config.sh"
+if ! load_config "$NODE_ID"; then
     exit 1
 fi
+
+SSH_OPTS="-o StrictHostKeyChecking=no"
 
 log_info "=========================================="
 log_info "VLESS + Reality 自动部署"
 log_info "=========================================="
 log_info "VPS: $VPS_IP"
+log_info "SSH Host: $SSH_HOST"
 log_info "域名: ${CF_SUBDOMAIN:-无}.${CF_DOMAIN:-无}"
 log_info "=========================================="
 
@@ -51,49 +60,8 @@ log_info "=========================================="
 # ==========================================
 log_info "Step 1: 部署 Xray 到 VPS..."
 
-# 生成临时 expect 脚本
-cat > /tmp/deploy_vps.exp << EOF
-#!/usr/bin/expect
-
-set timeout 180
-set ip "$VPS_IP"
-set password "$VPS_PASSWORD"
-set user "$VPS_USER"
-set port "$VPS_SSH_PORT"
-set script_dir "$SCRIPT_DIR"
-
-# SCP install script
-spawn scp -P \$port -o StrictHostKeyChecking=no \$script_dir/install_vless.sh \$user@\$ip:/root/
-expect {
-    "password:" { send "\$password\r" }
-    timeout { puts "SCP timed out"; exit 1 }
-}
-expect eof
-
-# SSH to run the script
-spawn ssh -p \$port -o StrictHostKeyChecking=no \$user@\$ip
-expect {
-    "password:" { send "\$password\r" }
-    timeout { puts "SSH timed out"; exit 1 }
-}
-
-expect "#"
-send "chmod +x /root/install_vless.sh && /root/install_vless.sh '$SUB_PORT' '$NODE_NAME'\r"
-
-expect {
-    "Deployment Successful" { }
-    timeout { puts "Installation timed out"; exit 1 }
-}
-
-expect "#"
-send "rm /root/install_vless.sh\r"
-
-expect "#"
-send "exit\r"
-expect eof
-EOF
-
-expect /tmp/deploy_vps.exp
+scp $SSH_OPTS "$SCRIPT_DIR/install_vless.sh" "$SSH_HOST:/root/"
+ssh $SSH_OPTS "$SSH_HOST" "chmod +x /root/install_vless.sh && /root/install_vless.sh $(printf %q "$SUB_PORT") $(printf %q "$NODE_NAME") && rm /root/install_vless.sh"
 log_info "VPS 部署完成"
 
 # ==========================================
@@ -162,28 +130,8 @@ echo "SSL certificate generated"
 SSLEOF
 
     # 上传并执行 SSL 配置脚本
-    expect << EOF
-set timeout 60
-spawn scp -P $VPS_SSH_PORT -o StrictHostKeyChecking=no /tmp/setup_ssl.sh $VPS_USER@$VPS_IP:/root/
-expect {
-    "password:" { send "$VPS_PASSWORD\r" }
-    timeout { exit 1 }
-}
-expect eof
-
-spawn ssh -p $VPS_SSH_PORT -o StrictHostKeyChecking=no $VPS_USER@$VPS_IP
-expect {
-    "password:" { send "$VPS_PASSWORD\r" }
-    timeout { exit 1 }
-}
-expect "#"
-send "chmod +x /root/setup_ssl.sh && /root/setup_ssl.sh '$CF_SUBDOMAIN' '$CF_DOMAIN'\r"
-expect "#"
-send "rm /root/setup_ssl.sh\r"
-expect "#"
-send "exit\r"
-expect eof
-EOF
+    scp $SSH_OPTS /tmp/setup_ssl.sh "$SSH_HOST:/root/"
+    ssh $SSH_OPTS "$SSH_HOST" "chmod +x /root/setup_ssl.sh && /root/setup_ssl.sh $(printf %q "$CF_SUBDOMAIN") $(printf %q "$CF_DOMAIN") && rm /root/setup_ssl.sh"
 
     log_info "SSL 配置完成"
 
@@ -214,7 +162,11 @@ USERS_FILE="$SCRIPT_DIR/users.yaml"
 
 if [ -f "$USERS_FILE" ]; then
     log_info "Step 4: 同步用户配置..."
-    "$SCRIPT_DIR/sync_users.sh"
+    if [ -n "$NODE_ID" ]; then
+        "$SCRIPT_DIR/sync_users.sh" --node "$NODE_ID"
+    else
+        "$SCRIPT_DIR/sync_users.sh"
+    fi
 else
     log_warn "未找到 users.yaml，跳过多用户配置"
     log_info "如需添加用户，请复制 users.yaml.example 为 users.yaml 并编辑"

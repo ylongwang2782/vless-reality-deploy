@@ -1,107 +1,46 @@
-#!/usr/bin/expect
+#!/bin/bash
 
-# 从 config.env 读取配置
-set script_dir [file dirname [info script]]
-set config_file "$script_dir/config.env"
+set -e
 
-if {![file exists $config_file]} {
-    puts "Error: config.env not found. Copy config.env.example to config.env and edit it."
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+CONFIG_FILE="$SCRIPT_DIR/config.yaml"
+
+NODE_ID=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -n|--node)
+            NODE_ID="$2"
+            shift 2
+            ;;
+        -h|--help)
+            echo "用法: $0 [--node <node_id>]"
+            exit 0
+            ;;
+        *)
+            echo "[ERROR] 未知参数: $1"
+            echo "用法: $0 [--node <node_id>]"
+            exit 1
+            ;;
+    esac
+done
+
+if [ ! -f "$CONFIG_FILE" ]; then
+    echo "[ERROR] config.yaml 不存在"
     exit 1
-}
+fi
 
-# 解析 config.env
-set fp [open $config_file r]
-while {[gets $fp line] >= 0} {
-    if {[regexp {^VPS_IP="(.+)"$} $line -> val]} { set ip $val }
-    if {[regexp {^VPS_PASSWORD="(.+)"$} $line -> val]} { set password $val }
-    if {[regexp {^VPS_USER="(.+)"$} $line -> val]} { set user $val }
-    if {[regexp {^VPS_SSH_PORT="(.+)"$} $line -> val]} { set port $val }
-}
-close $fp
-
-if {![info exists ip] || ![info exists password]} {
-    puts "Error: VPS_IP and VPS_PASSWORD must be set in config.env"
+source "$SCRIPT_DIR/config.sh"
+if ! load_config "$NODE_ID"; then
     exit 1
-}
+fi
 
-if {![info exists user]} { set user "root" }
-if {![info exists port]} { set port "22" }
+SSH_OPTS="-o StrictHostKeyChecking=no"
 
-set timeout 120
-set script_name "install_vless.sh"
-set local_dir $script_dir
+echo "[INFO] VPS: $VPS_IP"
+echo "[INFO] SSH Host: $SSH_HOST"
+echo "[INFO] 开始部署..."
 
-# SCP the script to remote
-spawn scp -P $port -o StrictHostKeyChecking=no $local_dir/$script_name $user@$ip:/root/
-expect {
-    "password:" { send "$password\r" }
-    timeout { puts "SCP timed out"; exit 1 }
-}
-expect eof
+scp $SSH_OPTS "$SCRIPT_DIR/install_vless.sh" "$SSH_HOST:/root/"
+ssh $SSH_OPTS "$SSH_HOST" "chmod +x /root/install_vless.sh && /root/install_vless.sh $(printf %q "$SUB_PORT") $(printf %q "$NODE_NAME") && rm /root/install_vless.sh"
 
-# SSH to run the script
-spawn ssh -p $port -o StrictHostKeyChecking=no $user@$ip
-expect {
-    "password:" { send "$password\r" }
-    timeout { puts "SSH timed out"; exit 1 }
-}
-
-expect "#"
-puts "--- Running Installation Script ---"
-send "chmod +x /root/$script_name\r"
-
-expect "#"
-send "/root/$script_name\r"
-
-# Wait for the script to finish
-expect "#"
-send "rm /root/$script_name\r"
-
-expect "#"
-send "exit\r"
-expect eof
-
-# Download generated files to local
-puts "\n--- Downloading Generated Files ---"
-
-# Download vless_link.txt
-spawn scp -P $port -o StrictHostKeyChecking=no $user@$ip:/root/vless_link.txt $local_dir/
-expect {
-    "password:" { send "$password\r" }
-    timeout { puts "Download vless_link.txt timed out"; exit 1 }
-}
-expect eof
-
-# Download clash_vless.yaml
-spawn scp -P $port -o StrictHostKeyChecking=no $user@$ip:/root/clash_vless.yaml $local_dir/
-expect {
-    "password:" { send "$password\r" }
-    timeout { puts "Download clash_vless.yaml timed out"; exit 1 }
-}
-expect eof
-
-# Download vless_qr.png
-spawn scp -P $port -o StrictHostKeyChecking=no $user@$ip:/root/vless_qr.png $local_dir/
-expect {
-    "password:" { send "$password\r" }
-    timeout { puts "Download vless_qr.png timed out"; exit 1 }
-}
-expect eof
-
-# Download clash_sub_url.txt
-spawn scp -P $port -o StrictHostKeyChecking=no $user@$ip:/root/clash_sub_url.txt $local_dir/
-expect {
-    "password:" { send "$password\r" }
-    timeout { puts "Download clash_sub_url.txt timed out"; exit 1 }
-}
-expect eof
-
-puts "\n================================================================"
-puts "   Files Downloaded Successfully!"
-puts "================================================================"
-puts "Local files:"
-puts "  - $local_dir/vless_link.txt"
-puts "  - $local_dir/clash_vless.yaml"
-puts "  - $local_dir/clash_sub_url.txt"
-puts "  - $local_dir/vless_qr.png"
-puts "================================================================"
+echo "[INFO] 部署完成"

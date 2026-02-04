@@ -8,7 +8,7 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-CONFIG_FILE="$SCRIPT_DIR/config.env"
+CONFIG_FILE="$SCRIPT_DIR/config.yaml"
 
 # 颜色输出
 RED='\033[0;31m'
@@ -20,26 +20,42 @@ log_info() { echo -e "${GREEN}[INFO]${NC} $1"; }
 log_warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 
-# 检查配置文件
+NODE_ID=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -n|--node)
+            NODE_ID="$2"
+            shift 2
+            ;;
+        -h|--help)
+            echo "用法: $0 [--node <node_id>]"
+            exit 0
+            ;;
+        *)
+            log_error "未知参数: $1"
+            echo "用法: $0 [--node <node_id>]"
+            exit 1
+            ;;
+    esac
+done
+
 if [ ! -f "$CONFIG_FILE" ]; then
-    log_error "config.env 不存在"
+    log_error "config.yaml 不存在"
     exit 1
 fi
 
-source "$CONFIG_FILE"
-
-if [ -z "$VPS_SSH_PORT" ]; then
-    VPS_SSH_PORT="22"
-fi
-
-if [ -z "$VPS_IP" ] || [ -z "$VPS_PASSWORD" ]; then
-    log_error "VPS_IP 和 VPS_PASSWORD 必须配置"
+source "$SCRIPT_DIR/config.sh"
+if ! load_config "$NODE_ID"; then
     exit 1
 fi
+
+SSH_OPTS="-o StrictHostKeyChecking=no"
 
 log_info "=========================================="
 log_info "部署客户端下载服务"
 log_info "=========================================="
+log_info "VPS: $VPS_IP"
+log_info "SSH Host: $SSH_HOST"
 
 # 客户端下载链接
 CLASH_VERGE_URL="https://github.com/clash-verge-rev/clash-verge-rev/releases/download/v2.4.5/Clash.Verge_2.4.5_x64-setup.exe"
@@ -404,35 +420,8 @@ REMOTE_EOF
 
 log_info "上传并执行安装脚本..."
 
-# 使用 expect 执行
-expect << EOF
-set timeout 600
-
-spawn scp -P $VPS_SSH_PORT -o StrictHostKeyChecking=no /tmp/setup_downloads_remote.sh $VPS_USER@$VPS_IP:/tmp/
-expect {
-    "password:" { send "$VPS_PASSWORD\r" }
-    timeout { puts "SCP timed out"; exit 1 }
-}
-expect eof
-
-spawn ssh -p $VPS_SSH_PORT -o StrictHostKeyChecking=no $VPS_USER@$VPS_IP
-expect {
-    "password:" { send "$VPS_PASSWORD\r" }
-    timeout { puts "SSH timed out"; exit 1 }
-}
-expect "#"
-send "chmod +x /tmp/setup_downloads_remote.sh && /tmp/setup_downloads_remote.sh\r"
-expect {
-    "下载服务部署完成" { }
-    "ERROR" { puts "Setup failed"; exit 1 }
-    timeout { puts "Timeout"; exit 1 }
-}
-expect "#"
-send "rm -f /tmp/setup_downloads_remote.sh\r"
-expect "#"
-send "exit\r"
-expect eof
-EOF
+scp $SSH_OPTS /tmp/setup_downloads_remote.sh "$SSH_HOST:/tmp/"
+ssh $SSH_OPTS "$SSH_HOST" "chmod +x /tmp/setup_downloads_remote.sh && /tmp/setup_downloads_remote.sh && rm -f /tmp/setup_downloads_remote.sh"
 
 # 生成下载链接
 if [ -n "$CF_SUBDOMAIN" ] && [ -n "$CF_DOMAIN" ]; then

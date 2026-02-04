@@ -8,7 +8,7 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-CONFIG_FILE="$SCRIPT_DIR/config.env"
+CONFIG_FILE="$SCRIPT_DIR/config.yaml"
 USERS_FILE="$SCRIPT_DIR/users.yaml"
 
 # 颜色输出
@@ -21,9 +21,27 @@ log_info() { echo -e "${GREEN}[INFO]${NC} $1"; }
 log_warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 
-# 检查配置文件
+NODE_ID=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -n|--node)
+            NODE_ID="$2"
+            shift 2
+            ;;
+        -h|--help)
+            echo "用法: $0 [--node <node_id>]"
+            exit 0
+            ;;
+        *)
+            log_error "未知参数: $1"
+            echo "用法: $0 [--node <node_id>]"
+            exit 1
+            ;;
+    esac
+done
+
 if [ ! -f "$CONFIG_FILE" ]; then
-    log_error "config.env 不存在，请先复制 config.env.example 并编辑"
+    log_error "config.yaml 不存在，请先复制 config.yaml.example 并编辑"
     exit 1
 fi
 
@@ -32,21 +50,18 @@ if [ ! -f "$USERS_FILE" ]; then
     exit 1
 fi
 
-source "$CONFIG_FILE"
-
-if [ -z "$VPS_SSH_PORT" ]; then
-    VPS_SSH_PORT="22"
-fi
-
-# 验证必要配置
-if [ -z "$VPS_IP" ] || [ -z "$VPS_PASSWORD" ]; then
-    log_error "VPS_IP 和 VPS_PASSWORD 必须在 config.env 中配置"
+source "$SCRIPT_DIR/config.sh"
+if ! load_config "$NODE_ID"; then
     exit 1
 fi
+
+SSH_OPTS="-o StrictHostKeyChecking=no"
 
 log_info "=========================================="
 log_info "同步用户配置到 VPS"
 log_info "=========================================="
+log_info "VPS: $VPS_IP"
+log_info "SSH Host: $SSH_HOST"
 
 # 生成远程执行脚本（从文件读取 YAML）
 cat > /tmp/sync_users_remote.sh << 'REMOTE_SCRIPT'
@@ -744,53 +759,14 @@ REMOTE_SCRIPT
 
 log_info "上传配置到 VPS..."
 
-# 创建 expect 脚本
-cat > /tmp/sync_expect.exp << EXPEOF
-#!/usr/bin/expect
-set timeout 300
-
-# 上传脚本和配置
-spawn scp -P $VPS_SSH_PORT -o StrictHostKeyChecking=no /tmp/sync_users_remote.sh $USERS_FILE $VPS_USER@$VPS_IP:/tmp/
-expect {
-    "password:" { send "$VPS_PASSWORD\r" }
-    timeout { puts "SCP timed out"; exit 1 }
-}
-expect eof
-
-# 执行脚本
-spawn ssh -p $VPS_SSH_PORT -o StrictHostKeyChecking=no $VPS_USER@$VPS_IP
-expect {
-    "password:" { send "$VPS_PASSWORD\r" }
-    timeout { puts "SSH timed out"; exit 1 }
-}
-expect "#"
-send "chmod +x /tmp/sync_users_remote.sh && /tmp/sync_users_remote.sh /tmp/users.yaml '$SUB_PORT' '$NODE_NAME'\r"
-expect {
-    "USER_LINKS_END" { }
-    "ERROR" { puts "Sync failed"; exit 1 }
-    timeout { puts "Timeout"; exit 1 }
-}
-expect "#"
-send "rm -f /tmp/sync_users_remote.sh /tmp/users.yaml\r"
-expect "#"
-send "exit\r"
-expect eof
-EXPEOF
-
-expect /tmp/sync_expect.exp
+scp $SSH_OPTS /tmp/sync_users_remote.sh "$USERS_FILE" "$SSH_HOST:/tmp/"
+ssh $SSH_OPTS "$SSH_HOST" "chmod +x /tmp/sync_users_remote.sh && /tmp/sync_users_remote.sh /tmp/users.yaml $(printf %q "$SUB_PORT") $(printf %q "$NODE_NAME")"
+ssh $SSH_OPTS "$SSH_HOST" "rm -f /tmp/sync_users_remote.sh /tmp/users.yaml"
 
 log_info "下载订阅链接..."
 
 # 下载合并的订阅链接文件
-expect << EOF
-set timeout 60
-spawn scp -P $VPS_SSH_PORT -o StrictHostKeyChecking=no $VPS_USER@$VPS_IP:/root/subscriptions.txt $SCRIPT_DIR/
-expect {
-    "password:" { send "$VPS_PASSWORD\r" }
-    timeout { puts "Download timed out"; exit 1 }
-}
-expect eof
-EOF
+scp $SSH_OPTS "$SSH_HOST:/root/subscriptions.txt" "$SCRIPT_DIR/"
 
 # 如果配置了 Cloudflare，更新订阅链接为 HTTPS
 if [ -n "$CF_API_TOKEN" ] && [ -n "$CF_DOMAIN" ] && [ -n "$CF_SUBDOMAIN" ]; then

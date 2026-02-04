@@ -22,28 +22,36 @@ cd vless-reality-deploy
 ### 2. 配置服务器
 
 ```bash
-cp config.env.example config.env
+cp config.yaml.example config.yaml
 ```
 
-编辑 `config.env`：
+编辑 `config.yaml`：
 
-```bash
-# VPS 配置
-VPS_IP="你的VPS IP"
-VPS_PASSWORD="你的VPS密码"
-VPS_USER="root"
+```yaml
+default_node: usa
 
-# Cloudflare 配置（可选）
-CF_API_TOKEN="你的Cloudflare API Token"
-CF_DOMAIN="你的域名"
-CF_SUBDOMAIN="sub"
+cloudflare:
+  api_token: "你的Cloudflare API Token"
+  domain: "你的域名"
 
-# 订阅端口
-SUB_PORT="8443"
-
-# 节点名称前缀
-NODE_NAME="Reality"
+nodes:
+  usa:
+    name: "USA"
+    ip: "你的VPS IP"
+    ssh_host: "bwg-usa"
+    subdomain: "sub"
+    sub_port: 8443
+  nl:
+    name: "NL"
+    ip: "你的VPS IP"
+    ssh_host: "vultr-nl"
+    subdomain: "nether"
+    sub_port: 8443
 ```
+
+说明：
+- `ssh_host` 是 `~/.ssh/config` 中配置的主机别名（使用密钥登录）
+- `default_node` 为默认节点，可通过 `--node <node_id>` 覆盖
 
 ### 3. 配置用户（可选）
 
@@ -78,6 +86,11 @@ chmod +x deploy.sh sync_users.sh
 ./deploy.sh
 ```
 
+指定节点（可选）：
+```bash
+./deploy.sh --node usa
+```
+
 部署完成后，每个用户的链接保存在 `user_links/` 目录：
 ```
 user_links/
@@ -97,6 +110,12 @@ user_links/
 
 ```bash
 ./sync_users.sh
+```
+
+多节点场景（可选）：
+```bash
+./sync_users.sh --node nl
+./add_user.sh owner 0 1 --node nl
 ```
 
 ### 用户配置说明
@@ -127,7 +146,7 @@ user_links/
 | `deploy.sh` | 主部署脚本 |
 | `sync_users.sh` | 用户同步脚本 |
 | `install_vless.sh` | VPS 安装脚本 |
-| `config.env.example` | 服务器配置模板 |
+| `config.yaml.example` | 服务器配置模板 |
 | `users.yaml.example` | 用户配置模板 |
 
 ## Cloudflare API Token
@@ -142,8 +161,8 @@ user_links/
 
 - VPS 需要是全新的 Ubuntu 系统（推荐 22.04/24.04）
 - 确保 VPS 的 443 和 8443 端口未被占用
-- 部署前确保能 SSH 连接到 VPS
-- `config.env` 和 `users.yaml` 包含敏感信息，请勿上传到公开仓库
+- 部署前确保能 SSH 连接到 VPS（使用密钥登录，并配置 `~/.ssh/config` 的主机别名）
+- `config.yaml` 和 `users.yaml` 包含敏感信息，请勿上传到公开仓库
 
 ## License
 

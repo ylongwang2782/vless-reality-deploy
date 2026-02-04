@@ -6,27 +6,54 @@
 # 示例: ./add_user.sh wyl 200 27
 # ==========================================
 
+usage() {
+    echo "用法: $0 <用户名> [流量限制GB] [重置日期] [--node <node_id>]"
+    echo "示例: $0 wyl 200 27 --node usa"
+}
+
+NODE_ID=""
+POSITIONAL=()
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -n|--node)
+            NODE_ID="$2"
+            shift 2
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            POSITIONAL+=("$1")
+            shift
+            ;;
+    esac
+done
+
+set -- "${POSITIONAL[@]}"
 USERNAME=$1
 TRAFFIC_LIMIT_GB=${2:-0}
 RESET_DAY=${3:-1}
 
 if [ -z "$USERNAME" ]; then
-    echo "用法: $0 <用户名> [流量限制GB] [重置日期]"
-    echo "示例: $0 wyl 200 27"
+    usage
     exit 1
 fi
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-CONFIG_FILE="$SCRIPT_DIR/config.env"
+CONFIG_FILE="$SCRIPT_DIR/config.yaml"
 
-source "$CONFIG_FILE"
-
-if [ -z "$VPS_SSH_PORT" ]; then
-    VPS_SSH_PORT="22"
+source "$SCRIPT_DIR/config.sh"
+if ! load_config "$NODE_ID"; then
+    exit 1
 fi
+
+SSH_OPTS="-o StrictHostKeyChecking=no"
 
 echo "[INFO] 添加用户: $USERNAME"
 [ "$TRAFFIC_LIMIT_GB" -gt 0 ] && echo "[INFO] 流量限制: ${TRAFFIC_LIMIT_GB}GB/月，每月${RESET_DAY}号重置"
+echo "[INFO] VPS: $VPS_IP"
+echo "[INFO] SSH Host: $SSH_HOST"
 
 # 生成远程执行脚本
 cat > /tmp/add_user_remote.sh << 'REMOTE_SCRIPT'
@@ -211,50 +238,19 @@ echo "================================================================"
 REMOTE_SCRIPT
 
 # 上传并执行远程脚本
-expect << EOF
-set timeout 120
-spawn scp -P $VPS_SSH_PORT -o StrictHostKeyChecking=no /tmp/add_user_remote.sh $VPS_USER@$VPS_IP:/root/
-expect {
-    "password:" { send "$VPS_PASSWORD\r" }
-    timeout { exit 1 }
-}
-expect eof
+if ! scp $SSH_OPTS /tmp/add_user_remote.sh "$SSH_HOST:/root/"; then
+    echo "[ERROR] 上传脚本失败"
+    exit 1
+fi
 
-spawn ssh -p $VPS_SSH_PORT -o StrictHostKeyChecking=no $VPS_USER@$VPS_IP
-expect {
-    "password:" { send "$VPS_PASSWORD\r" }
-    timeout { exit 1 }
-}
-expect "#"
-send "chmod +x /root/add_user_remote.sh && /root/add_user_remote.sh '$USERNAME' '$TRAFFIC_LIMIT_GB' '$RESET_DAY' '$SUB_PORT'\r"
-expect {
-    "用户添加成功" { }
-    "ERROR" { exit 1 }
-    timeout { exit 1 }
-}
-expect "#"
-send "rm /root/add_user_remote.sh\r"
-expect "#"
-send "exit\r"
-expect eof
-EOF
-
-if [ $? -ne 0 ]; then
+if ! ssh $SSH_OPTS "$SSH_HOST" "chmod +x /root/add_user_remote.sh && /root/add_user_remote.sh $(printf %q "$USERNAME") $(printf %q "$TRAFFIC_LIMIT_GB") $(printf %q "$RESET_DAY") $(printf %q "$SUB_PORT") && rm /root/add_user_remote.sh"; then
     echo "[ERROR] 用户添加失败"
     exit 1
 fi
 
 # 下载用户文件
 for file in ${USERNAME}_vless_link.txt ${USERNAME}_sub_url.txt; do
-    expect << EOF
-set timeout 30
-spawn scp -P $VPS_SSH_PORT -o StrictHostKeyChecking=no $VPS_USER@$VPS_IP:/root/$file $SCRIPT_DIR/
-expect {
-    "password:" { send "$VPS_PASSWORD\r" }
-    timeout { continue }
-}
-expect eof
-EOF
+    scp $SSH_OPTS "$SSH_HOST:/root/$file" "$SCRIPT_DIR/" || true
 done
 
 # 如果配置了 Cloudflare，更新订阅链接为 HTTPS

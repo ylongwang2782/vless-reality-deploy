@@ -1,54 +1,42 @@
-#!/usr/bin/expect
+#!/bin/bash
 
-# 从 config.env 读取配置
-set script_dir [file dirname [info script]]
-set config_file "$script_dir/config.env"
+set -e
 
-if {![file exists $config_file]} {
-    puts "Error: config.env not found. Copy config.env.example to config.env and edit it."
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+CONFIG_FILE="$SCRIPT_DIR/config.yaml"
+
+NODE_ID=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -n|--node)
+            NODE_ID="$2"
+            shift 2
+            ;;
+        -h|--help)
+            echo "用法: $0 [--node <node_id>]"
+            exit 0
+            ;;
+        *)
+            echo "[ERROR] 未知参数: $1"
+            echo "用法: $0 [--node <node_id>]"
+            exit 1
+            ;;
+    esac
+done
+
+if [ ! -f "$CONFIG_FILE" ]; then
+    echo "[ERROR] config.yaml 不存在"
     exit 1
-}
+fi
 
-# 解析 config.env
-set fp [open $config_file r]
-while {[gets $fp line] >= 0} {
-    if {[regexp {^VPS_IP="(.+)"$} $line -> val]} { set ip $val }
-    if {[regexp {^VPS_PASSWORD="(.+)"$} $line -> val]} { set password $val }
-    if {[regexp {^VPS_USER="(.+)"$} $line -> val]} { set user $val }
-    if {[regexp {^VPS_SSH_PORT="(.+)"$} $line -> val]} { set port $val }
-}
-close $fp
-
-if {![info exists ip] || ![info exists password]} {
-    puts "Error: VPS_IP and VPS_PASSWORD must be set in config.env"
+source "$SCRIPT_DIR/config.sh"
+if ! load_config "$NODE_ID"; then
     exit 1
-}
+fi
 
-if {![info exists user]} { set user "root" }
-if {![info exists port]} { set port "22" }
+SSH_OPTS="-o StrictHostKeyChecking=no"
 
-set timeout 30
+echo "[INFO] VPS: $VPS_IP"
+echo "[INFO] SSH Host: $SSH_HOST"
 
-spawn ssh -p $port -o StrictHostKeyChecking=no $user@$ip
-
-expect {
-    "password:" { send "$password\r" }
-    timeout { puts "Connection timed out"; exit 1 }
-}
-
-expect "#"
-puts "--- Checking Config Content ---"
-send "cat /usr/local/etc/xray/config.json\r"
-
-expect "#"
-puts "--- Checking Xray Service Logs ---"
-send "journalctl -u xray -n 50 --no-pager\r"
-
-expect "#"
-puts "--- Checking if Port 443 is used ---"
-send "ss -tulpn | grep 443\r"
-
-expect "#"
-send "exit\r"
-
-expect eof
+ssh $SSH_OPTS "$SSH_HOST" "echo '--- Checking Config Content ---'; cat /usr/local/etc/xray/config.json; echo '--- Checking Xray Service Logs ---'; journalctl -u xray -n 50 --no-pager; echo '--- Checking if Port 443 is used ---'; ss -tulpn | grep 443 || true"
