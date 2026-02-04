@@ -249,8 +249,138 @@ proxy-groups:
       - {node_name}
       - DIRECT
 
+  - name: "Streaming"
+    type: select
+    proxies:
+      - {node_name}
+      - Proxy
+      - DIRECT
+
+  - name: "AI"
+    type: select
+    proxies:
+      - {node_name}
+      - Proxy
+      - DIRECT
+
+  - name: "AdBlock"
+    type: select
+    proxies:
+      - REJECT
+      - DIRECT
+
+rule-providers:
+  reject:
+    type: http
+    behavior: domain
+    url: "https://cdn.jsdelivr.net/gh/Loyalsoldier/clash-rules@release/reject.txt"
+    path: ./ruleset/reject.yaml
+    interval: 86400
+
+  direct:
+    type: http
+    behavior: domain
+    url: "https://cdn.jsdelivr.net/gh/Loyalsoldier/clash-rules@release/direct.txt"
+    path: ./ruleset/direct.yaml
+    interval: 86400
+
+  proxy:
+    type: http
+    behavior: domain
+    url: "https://cdn.jsdelivr.net/gh/Loyalsoldier/clash-rules@release/proxy.txt"
+    path: ./ruleset/proxy.yaml
+    interval: 86400
+
+  private:
+    type: http
+    behavior: domain
+    url: "https://cdn.jsdelivr.net/gh/Loyalsoldier/clash-rules@release/private.txt"
+    path: ./ruleset/private.yaml
+    interval: 86400
+
+  gfw:
+    type: http
+    behavior: domain
+    url: "https://cdn.jsdelivr.net/gh/Loyalsoldier/clash-rules@release/gfw.txt"
+    path: ./ruleset/gfw.yaml
+    interval: 86400
+
+  tld-not-cn:
+    type: http
+    behavior: domain
+    url: "https://cdn.jsdelivr.net/gh/Loyalsoldier/clash-rules@release/tld-not-cn.txt"
+    path: ./ruleset/tld-not-cn.yaml
+    interval: 86400
+
+  telegramcidr:
+    type: http
+    behavior: ipcidr
+    url: "https://cdn.jsdelivr.net/gh/Loyalsoldier/clash-rules@release/telegramcidr.txt"
+    path: ./ruleset/telegramcidr.yaml
+    interval: 86400
+
+  cncidr:
+    type: http
+    behavior: ipcidr
+    url: "https://cdn.jsdelivr.net/gh/Loyalsoldier/clash-rules@release/cncidr.txt"
+    path: ./ruleset/cncidr.yaml
+    interval: 86400
+
+  lancidr:
+    type: http
+    behavior: ipcidr
+    url: "https://cdn.jsdelivr.net/gh/Loyalsoldier/clash-rules@release/lancidr.txt"
+    path: ./ruleset/lancidr.yaml
+    interval: 86400
+
 rules:
-  - GEOIP,CN,DIRECT
+  # Ad blocking
+  - RULE-SET,reject,AdBlock
+
+  # Private network
+  - RULE-SET,private,DIRECT
+  - RULE-SET,lancidr,DIRECT,no-resolve
+
+  # AI services (OpenAI, Claude, etc.)
+  - DOMAIN-SUFFIX,openai.com,AI
+  - DOMAIN-SUFFIX,ai.com,AI
+  - DOMAIN-SUFFIX,anthropic.com,AI
+  - DOMAIN-SUFFIX,claude.ai,AI
+  - DOMAIN-SUFFIX,gemini.google.com,AI
+  - DOMAIN-SUFFIX,bard.google.com,AI
+  - DOMAIN-SUFFIX,perplexity.ai,AI
+
+  # Streaming services
+  - DOMAIN-SUFFIX,netflix.com,Streaming
+  - DOMAIN-SUFFIX,nflxvideo.net,Streaming
+  - DOMAIN-SUFFIX,youtube.com,Streaming
+  - DOMAIN-SUFFIX,googlevideo.com,Streaming
+  - DOMAIN-SUFFIX,ytimg.com,Streaming
+  - DOMAIN-SUFFIX,disneyplus.com,Streaming
+  - DOMAIN-SUFFIX,hulu.com,Streaming
+  - DOMAIN-SUFFIX,hbo.com,Streaming
+  - DOMAIN-SUFFIX,hbomax.com,Streaming
+  - DOMAIN-SUFFIX,spotify.com,Streaming
+  - DOMAIN-SUFFIX,twitch.tv,Streaming
+
+  # Telegram
+  - RULE-SET,telegramcidr,Proxy,no-resolve
+
+  # GFW blocked sites
+  - RULE-SET,gfw,Proxy
+  - RULE-SET,tld-not-cn,Proxy
+
+  # Proxy domains
+  - RULE-SET,proxy,Proxy
+
+  # Direct domains (China)
+  - RULE-SET,direct,DIRECT
+
+  # China IP
+  - RULE-SET,cncidr,DIRECT,no-resolve
+  - GEOIP,CN,DIRECT,no-resolve
+
+  # Final rule
   - MATCH,Proxy
 '''
 
