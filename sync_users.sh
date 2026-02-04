@@ -88,8 +88,11 @@ fi
 # 安装 PyYAML 如果不存在
 python3 -c "import yaml" 2>/dev/null || pip3 install pyyaml -q
 
-# 获取服务器信息
-IP=$(curl -s ifconfig.me)
+# 获取服务器信息（优先 IPv4）
+IP=$(curl -4 -s ifconfig.me 2>/dev/null || true)
+if [ -z "$IP" ]; then
+    IP=$(curl -6 -s ifconfig.me 2>/dev/null || true)
+fi
 
 # 从配置获取密钥
 KEYS=$(python3 << 'PY'

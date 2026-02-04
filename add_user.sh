@@ -85,7 +85,10 @@ PY
 )
 # Xray 把公钥叫做 "Password"
 PUB=$($XRAY_BIN x25519 -i "$PK" 2>&1 | grep "Password" | awk '{print $2}')
-IP=$(curl -s ifconfig.me)
+IP=$(curl -4 -s ifconfig.me 2>/dev/null || true)
+if [ -z "$IP" ]; then
+    IP=$(curl -6 -s ifconfig.me 2>/dev/null || true)
+fi
 
 echo "[INFO] Public Key: $PUB"
 
