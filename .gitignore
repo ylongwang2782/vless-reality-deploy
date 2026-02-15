@@ -1,0 +1,23 @@
+# Sensitive configs
+config.yaml
+users.yaml
+subscriptions.txt
+CLAUDE.md
+
+# Generated files
+user_links/
+*_link.txt
+*_url.txt
+*_sub_url.txt
+*_vless_link.txt
+clash_vless.yaml
+clash_sub_url.txt
+vless_link.txt
+vless_qr.png
+download_links.txt
+config.env
+
+# Temp
+*.tmp
+*.bak
+.claude/

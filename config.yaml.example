@@ -1,0 +1,23 @@
+# VLESS + Reality 部署配置模板
+# 使用 SSH 密钥登录，请确保 ~/.ssh/config 已配置对应主机别名
+
+# 默认节点
+# default_node: usa
+
+cloudflare:
+  api_token: "your_cloudflare_api_token"
+  domain: "your_domain.com"
+
+nodes:
+  usa:
+    name: "USA"
+    ip: "your_vps_ip"
+    ssh_host: "bwg-usa"
+    subdomain: "sub"
+    sub_port: 8443
+  nl:
+    name: "NL"
+    ip: "your_vps_ip"
+    ssh_host: "vultr-nl"
+    subdomain: "nether"
+    sub_port: 8443
